@@ -1,0 +1,46 @@
+# ──────────────────────────────────────────────────────────────────────────────
+#  AI Universitar — fișiere ignorate de git
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Mediu virtual Python
+.venv/
+venv/
+env/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Configurări locale
+.env
+.env.local
+
+# Date generate
+data/chroma_db/
+data/logs/
+chroma_db/
+*.log
+*.log.zip
+
+# Documente (regulamente — nu se urcă pe git)
+documente/*.pdf
+documente/*.docx
+documente/*.doc
+documente/*.txt
+!documente/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/

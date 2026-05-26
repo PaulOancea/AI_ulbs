@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile backend/__init__.py backend/config.py backend/logging_config.py backend/exceptions.py backend/schemas.py backend/main.py)",
+      "Bash(python -m py_compile backend/core/__init__.py backend/core/loaders.py backend/core/chunker.py backend/core/vector_store.py backend/core/retriever.py backend/core/reranker.py backend/core/memory.py backend/core/prompts.py backend/core/llm.py backend/core/ingestion.py backend/core/rag_chain.py)",
+      "Bash(python -m py_compile backend/api/__init__.py backend/api/chat.py backend/api/documents.py backend/api/health.py)",
+      "Bash(python -m py_compile frontend/streamlit_app.py app.py config.py document_processor.py rag_engine.py scripts/ingest.py tests/test_chunker.py tests/test_memory.py)",
+      "Bash(.venv/Scripts/python.exe -m pip list)",
+      "Bash(.venv/Scripts/python.exe -m pip install -r requirements.txt)",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0, '.'\\); from backend.core import llm; from backend.core.rag_chain import RAGChain; from backend.core.vector_store import VectorStore; print\\('Toate importurile OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pip install pytesseract pypdfium2 Pillow bcrypt)",
+      "Bash(.venv/Scripts/python.exe -m py_compile backend/core/ocr.py backend/core/loaders.py backend/config.py backend/auth/__init__.py backend/auth/database.py backend/auth/service.py)",
+      "Bash(.venv/Scripts/python.exe -m py_compile frontend/__init__.py frontend/streamlit_app.py frontend/components/__init__.py frontend/components/styles.py frontend/components/session.py frontend/views/__init__.py frontend/views/home.py frontend/views/auth.py frontend/views/chat.py)"
+    ]
+  }
+}

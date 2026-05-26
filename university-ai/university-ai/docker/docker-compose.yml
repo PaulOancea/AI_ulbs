@@ -1,0 +1,73 @@
+# ──────────────────────────────────────────────────────────────────────────────
+#  docker-compose.yml — orchestrare completă
+#  Pornește 3 servicii: Ollama (LLM) + Backend FastAPI + Frontend Streamlit
+#
+#  Comenzi:
+#    docker compose up -d                 # pornire
+#    docker compose logs -f frontend      # logs UI
+#    docker compose exec ollama ollama pull llama3.1:8b   # descarcă modelul
+#    docker compose down                  # oprire
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: uni-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: uni-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - CHROMA_PATH=/data/chroma_db
+      - DOCS_FOLDER=/data/documente
+      - LOG_DIR=/data/logs
+      - CORS_ORIGINS=http://localhost:8501,http://frontend:8501
+    volumes:
+      - ../documente:/data/documente:ro
+      - app_data:/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: uni-frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - CHROMA_PATH=/data/chroma_db
+      - DOCS_FOLDER=/data/documente
+      - LOG_DIR=/data/logs
+    volumes:
+      - ../documente:/data/documente:ro
+      - app_data:/data
+    depends_on:
+      backend:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ollama_data:    # modelele Ollama (mari — păstrate persistent)
+  app_data:       # ChromaDB + logs
