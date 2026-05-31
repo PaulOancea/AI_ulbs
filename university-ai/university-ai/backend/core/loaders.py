@@ -76,12 +76,120 @@ class ExtractedPage:
     extra: dict = field(default_factory=dict)
 
 
+# ── Randare tabele (rânduri/coloane → markdown) ───────────────────────────────
+
+def render_table_md(rows: List[list]) -> str:
+    """
+    Convertește un tabel (listă de rânduri, fiecare rând = listă de celule) în
+    format markdown, ușor de interpretat de LLM.
+
+    Tratamente esențiale:
+      • celulele goale dintr-o coloană sunt completate de sus în jos
+        (forward-fill) — astfel celulele ÎMBINATE pe verticală (ex: numele unui
+        program de studii care se întinde peste mai multe rânduri) apar pe FIECARE
+        rând, păstrând asocierea rând↔coloană;
+      • rândurile complet goale sunt eliminate;
+      • newline-urile din interiorul celulelor sunt aplatizate la spațiu.
+    """
+    if not rows:
+        return ""
+
+    norm: List[List[str]] = []
+    for r in rows:
+        norm.append([(c or "").replace("\n", " ").strip() for c in r])
+
+    # Eliminăm rândurile complet goale
+    norm = [r for r in norm if any(cell for cell in r)]
+    if not norm:
+        return ""
+
+    width = max(len(r) for r in norm)
+    norm = [r + [""] * (width - len(r)) for r in norm]
+
+    # Forward-fill pe coloane (celule îmbinate vertical → propagate în jos)
+    for col in range(width):
+        last = ""
+        for r in norm:
+            if r[col]:
+                last = r[col]
+            elif last:
+                r[col] = last
+
+    header = norm[0]
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---"] * width) + " |",
+    ]
+    for r in norm[1:]:
+        lines.append("| " + " | ".join(r) + " |")
+    return "\n".join(lines)
+
+
+def _obj_in_bbox(obj: dict, bbox) -> bool:
+    """True dacă centrul unui obiect pdfplumber cade în interiorul unui bbox."""
+    x0, top, x1, bottom = bbox
+    cx = (obj["x0"] + obj["x1"]) / 2
+    cy = (obj["top"] + obj["bottom"]) / 2
+    return x0 <= cx <= x1 and top <= cy <= bottom
+
+
+def _extract_page_with_tables(page) -> str:
+    """
+    Extrage conținutul unei pagini separând textul narativ de tabele.
+
+    Tabelele cu chenare sunt detectate cu pdfplumber și redate structurat
+    (markdown), iar textul din afara tabelelor e extras separat — evitând
+    amestecul rânduri/coloane produs de `extract_text()` peste un tabel.
+
+    Dacă pagina nu conține tabele (sau detecția eșuează), revine la
+    `extract_text()` clasic.
+    """
+    try:
+        tables = page.find_tables()
+    except Exception:
+        tables = []
+
+    if not tables:
+        return clean_text(page.extract_text() or "")
+
+    table_bboxes = [t.bbox for t in tables]
+
+    # Text narativ = tot ce NU se află într-un bbox de tabel
+    def _outside_tables(obj):
+        return not any(_obj_in_bbox(obj, b) for b in table_bboxes)
+
+    parts: List[str] = []
+    try:
+        narrative = page.filter(_outside_tables).extract_text() or ""
+    except Exception:
+        narrative = ""
+    if narrative.strip():
+        parts.append(clean_text(narrative))
+
+    for ti, table in enumerate(tables, start=1):
+        try:
+            rows = table.extract()
+        except Exception:
+            continue
+        md = render_table_md(rows)
+        if md:
+            # Marcăm explicit blocul de tabel — chunker-ul îl tratează special
+            parts.append(f"[Tabel {ti}]\n{clean_text(md)}")
+
+    combined = "\n\n".join(p for p in parts if p.strip())
+    # Fallback: dacă separarea n-a produs nimic util, folosim textul brut
+    if len(combined.strip()) < 10:
+        return clean_text(page.extract_text() or "")
+    return combined
+
+
 # ── PDF loader ────────────────────────────────────────────────────────────────
 
 def extract_pdf(path: Path) -> List[ExtractedPage]:
     """
     Extrage text din PDF cu strategie hibridă:
-      1. Încearcă pdfplumber (rapid, text nativ).
+      1. Încearcă pdfplumber (rapid, text nativ) — cu extragere STRUCTURATĂ a
+         tabelelor (rânduri/coloane păstrate în format markdown).
       2. Pentru fiecare pagină cu text gol/scurt → OCR pe acea pagină.
       3. Dacă întregul PDF e gol → OCR pe TOATE paginile.
 
@@ -95,8 +203,7 @@ def extract_pdf(path: Path) -> List[ExtractedPage]:
         with pdfplumber.open(path) as pdf:
             total_pages = len(pdf.pages)
             for i, page in enumerate(pdf.pages, start=1):
-                raw = page.extract_text() or ""
-                text = clean_text(raw)
+                text = _extract_page_with_tables(page)
                 if text and len(text) > settings.ocr_min_text_threshold:
                     pages.append(ExtractedPage(text=text, page=i))
                 else:
@@ -187,15 +294,12 @@ def extract_docx(path: Path) -> List[ExtractedPage]:
         if text:
             parts.append(text)
 
-    # Tabele → format pipe-separated cu header marker
+    # Tabele → markdown structurat (header + rânduri), consistent cu PDF-ul
     for ti, table in enumerate(doc.tables, start=1):
-        rows_md = []
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            if any(cells):
-                rows_md.append(" | ".join(cells))
-        if rows_md:
-            parts.append(f"\n[Tabel {ti}]\n" + "\n".join(rows_md))
+        rows = [[cell.text for cell in row.cells] for row in table.rows]
+        md = render_table_md(rows)
+        if md:
+            parts.append(f"\n[Tabel {ti}]\n{md}")
 
     full_text = clean_text("\n\n".join(parts))
     return [ExtractedPage(text=full_text, page=1)] if full_text else []

@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_top_n: int = 5
     reranker_enabled: bool = True
+    # Prag RELATIV de relevanță aplicat după rerank: păstrăm un fragment doar
+    # dacă scorul lui ≥ ratio × scorul celui mai bun fragment. Astfel evităm
+    # afișarea surselor irelevante (fragmente cu scor mult sub vârf).
+    # 0.0 = păstrează tot (top_n); 1.0 = doar fragmentele la egalitate cu vârful.
+    rerank_keep_ratio: float = 0.5
 
     # ── ChromaDB ──────────────────────────────────────────────────────────────
     chroma_path: str = "./data/chroma_db"
@@ -91,6 +96,9 @@ class Settings(BaseSettings):
     guest_question_limit: int = 3       # întrebări permise fără cont
     password_min_length: int = 6
     session_secret: str = "change-me-in-production-please-very-secret"
+    # Utilizatorii (username) cu drepturi de administrator — văd panoul tehnic
+    # (status sistem, încărcare documente, selector model etc.). CSV în .env.
+    admin_usernames: List[str] = Field(default_factory=lambda: ["admin"])
 
     # ── Validatori ────────────────────────────────────────────────────────────
 
@@ -100,6 +108,14 @@ class Settings(BaseSettings):
         """Permite specificarea CORS prin string CSV în .env."""
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+
+    @field_validator("admin_usernames", mode="before")
+    @classmethod
+    def split_admins(cls, v):
+        """Permite specificarea adminilor prin string CSV în .env."""
+        if isinstance(v, str):
+            return [u.strip() for u in v.split(",") if u.strip()]
         return v
 
     @field_validator("hybrid_alpha")

@@ -68,7 +68,9 @@ formă completă, auto-suficientă, folosind contextul conversației precedente.
 REGULI:
 - Dacă întrebarea conține referințe contextuale ("dar pentru…", "și în cazul…", "el", \
 "acesta", "aceasta"), o reformulezi într-o formă completă.
-- Dacă întrebarea este deja clară și completă, o returnezi neschimbată.
+- Dacă întrebarea este deja clară și completă (conține un subiect explicit), o returnezi \
+EXACT neschimbată. NU adăuga context, presupuneri sau detalii care nu există în întrebare.
+- NU modifici NICIODATĂ cifre, nume proprii, date sau valori numerice din întrebare.
 - Răspunzi DOAR cu întrebarea reformulată, fără explicații, fără ghilimele.
 - Păstrezi limba originală (română).
 

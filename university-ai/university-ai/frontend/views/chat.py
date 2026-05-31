@@ -23,6 +23,7 @@ from backend.core.vector_store import VectorStore
 from backend.exceptions import AppException
 from backend.logging_config import logger
 from frontend.components import session
+from frontend.components.navbar import render_navbar
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -90,11 +91,12 @@ def _ensure_chat_exists(user: dict, first_question: str) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _render_sidebar(vs, ingestion):
+    """
+    Sidebar orientat spre utilizator: doar profilul + conversațiile proprii.
+    Panoul tehnic (status, model, upload, setări) e vizibil EXCLUSIV pentru
+    administratori, în spatele unui buton.
+    """
     user = session.get_current_user()
-    ollama_ok = llm.is_alive()
-    doc_count = vs.get_count()
-    file_count = len(vs.get_ingested_files())
-    models = llm.list_models() if ollama_ok else []
 
     with st.sidebar:
         # ── Header / user info ────────────────────────────────────────────────
@@ -113,38 +115,8 @@ def _render_sidebar(vs, ingestion):
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("🚪 Delogare", use_container_width=True, key="sb_logout"):
-                session.logout_user()
-                session.navigate_to(session.PAGE_HOME)
-        else:
-            remaining = session.guest_questions_remaining()
-            st.markdown(
-                f"""
-                <div class="user-chip">
-                    <div class="user-avatar" style="background: #6c757d;">👤</div>
-                    <div>
-                        <div class="user-name">Invitat</div>
-                        <div class="user-meta">{remaining} întrebări rămase</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("🔐 Login", use_container_width=True, key="sb_login"):
-                    session.navigate_to(session.PAGE_LOGIN)
-            with c2:
-                if st.button("✨ Cont", use_container_width=True, key="sb_register"):
-                    session.navigate_to(session.PAGE_REGISTER)
 
-        if st.button("🏠 Pagina principală", use_container_width=True, key="sb_home"):
-            session.navigate_to(session.PAGE_HOME)
-
-        st.divider()
-
-        # ── Istoric chat (doar pentru useri logați) ───────────────────────────
-        if user:
+            # ── Istoricul conversațiilor proprii ──────────────────────────────
             st.markdown("### 💬 Conversațiile tale")
 
             if st.button("➕ Conversație nouă", type="primary",
@@ -185,102 +157,147 @@ def _render_sidebar(vs, ingestion):
                                 st.session_state.messages = []
                                 session.set_active_chat(None)
                             st.rerun()
+        else:
+            # ── Invitat: doar profil + îndemn la cont (fără detalii tehnice) ───
+            remaining = session.guest_questions_remaining()
+            st.markdown(
+                f"""
+                <div class="user-chip">
+                    <div class="user-avatar" style="background: #6c757d;">👤</div>
+                    <div>
+                        <div class="user-name">Invitat</div>
+                        <div class="user-meta">{remaining} întrebări rămase</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "Creează un cont pentru conversații nelimitate și istoric salvat."
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🔐 Login", use_container_width=True, key="sb_login"):
+                    session.navigate_to(session.PAGE_LOGIN)
+            with c2:
+                if st.button("✨ Cont", use_container_width=True, key="sb_register"):
+                    session.navigate_to(session.PAGE_REGISTER)
 
+        # ── Panou administrare (DOAR pentru admini, în spatele unui buton) ────
+        if session.is_admin():
             st.divider()
+            label = "🔧 Ascunde panoul admin" if st.session_state.show_admin_panel \
+                else "🔧 Panou administrare"
+            if st.button(label, use_container_width=True, key="sb_admin_toggle"):
+                st.session_state.show_admin_panel = not st.session_state.show_admin_panel
+                st.rerun()
 
-        # ── Status sistem ─────────────────────────────────────────────────────
-        st.markdown("**Status sistem**")
-        c1, c2 = st.columns(2)
-        with c1:
-            dot = "ok" if ollama_ok else "err"
-            text = "Ollama" if ollama_ok else "Offline"
-            st.markdown(
-                f'<div class="status-pill"><span class="status-dot {dot}"></span> {text}</div>',
-                unsafe_allow_html=True,
-            )
-        with c2:
-            dot = "ok" if doc_count > 0 else "warn"
-            st.markdown(
-                f'<div class="status-pill"><span class="status-dot {dot}"></span> '
-                f'{file_count} docs</div>',
-                unsafe_allow_html=True,
-            )
+            if st.session_state.show_admin_panel:
+                _render_admin_panel(vs, ingestion)
 
-        ocr_ok = is_tesseract_available()
-        ocr_text = "OCR activ" if ocr_ok else "OCR offline"
-        ocr_dot = "ok" if ocr_ok else "warn"
+
+def _render_admin_panel(vs, ingestion):
+    """Panoul tehnic — vizibil doar pentru administratori."""
+    ollama_ok = llm.is_alive()
+    doc_count = vs.get_count()
+    file_count = len(vs.get_ingested_files())
+    models = llm.list_models() if ollama_ok else []
+
+    st.caption("⚙️ Vizibil doar pentru administratori")
+
+    # ── Status sistem ─────────────────────────────────────────────────────────
+    st.markdown("**Status sistem**")
+    c1, c2 = st.columns(2)
+    with c1:
+        dot = "ok" if ollama_ok else "err"
+        text = "Ollama" if ollama_ok else "Offline"
         st.markdown(
-            f'<div class="status-pill" style="margin-top:8px;">'
-            f'<span class="status-dot {ocr_dot}"></span> {ocr_text}</div>',
+            f'<div class="status-pill"><span class="status-dot {dot}"></span> {text}</div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        dot = "ok" if doc_count > 0 else "warn"
+        st.markdown(
+            f'<div class="status-pill"><span class="status-dot {dot}"></span> '
+            f'{file_count} docs</div>',
             unsafe_allow_html=True,
         )
 
-        # ── Model selector ────────────────────────────────────────────────────
-        if models:
-            st.markdown("**Model AI**")
-            idx = (
-                models.index(settings.ollama_model)
-                if settings.ollama_model in models else 0
-            )
-            sel = st.selectbox(
-                "model", options=models, index=idx,
-                label_visibility="collapsed",
-            )
-            st.session_state.selected_model = sel
+    ocr_ok = is_tesseract_available()
+    ocr_text = "OCR activ" if ocr_ok else "OCR offline"
+    ocr_dot = "ok" if ocr_ok else "warn"
+    st.markdown(
+        f'<div class="status-pill" style="margin-top:8px;">'
+        f'<span class="status-dot {ocr_dot}"></span> {ocr_text}</div>',
+        unsafe_allow_html=True,
+    )
 
-        st.divider()
+    # ── Model selector ──────────────────────────────────────────────────────
+    if models:
+        st.markdown("**Model AI**")
+        idx = (
+            models.index(settings.ollama_model)
+            if settings.ollama_model in models else 0
+        )
+        sel = st.selectbox(
+            "model", options=models, index=idx,
+            label_visibility="collapsed",
+        )
+        st.session_state.selected_model = sel
 
-        # ── Upload documente ──────────────────────────────────────────────────
-        with st.expander("📂 Adaugă documente"):
-            allowed_types = ["pdf", "docx", "txt"]
-            if ocr_ok:
-                allowed_types += ["png", "jpg", "jpeg", "tiff", "bmp"]
+    st.divider()
 
-            uploaded = st.file_uploader(
-                "Selectează fișiere",
-                type=allowed_types,
-                accept_multiple_files=True,
-                label_visibility="collapsed",
-                key="chat_uploader",
-            )
-            force = st.checkbox("Re-indexează dacă există", value=False, key="force_idx")
+    # ── Upload documente ──────────────────────────────────────────────────────
+    with st.expander("📂 Adaugă documente", expanded=True):
+        allowed_types = ["pdf", "docx", "txt"]
+        if ocr_ok:
+            allowed_types += ["png", "jpg", "jpeg", "tiff", "bmp"]
 
-            if uploaded and st.button(
-                f"Indexează {len(uploaded)}",
-                type="primary",
-                use_container_width=True,
-                key="do_index",
-            ):
-                progress = st.progress(0)
-                results = []
-                for i, uf in enumerate(uploaded):
-                    with st.spinner(f"Procesez {uf.name}..."):
-                        res = ingestion.ingest_file_bytes(uf.read(), uf.name, force=force)
-                    results.append(res)
-                    progress.progress((i + 1) / len(uploaded))
+        uploaded = st.file_uploader(
+            "Selectează fișiere",
+            type=allowed_types,
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            key="chat_uploader",
+        )
+        force = st.checkbox("Re-indexează dacă există", value=False, key="force_idx")
 
-                for r in results:
-                    icon = {"ok": "✅", "skip": "⏭", "error": "❌"}[r["status"]]
-                    msg = f"{icon} **{r['filename']}**"
-                    if r["status"] == "ok":
-                        msg += f" — {r['chunks']} fragmente"
-                    elif r.get("message"):
-                        msg += f" — {r['message']}"
-                    st.write(msg)
+        if uploaded and st.button(
+            f"Indexează {len(uploaded)}",
+            type="primary",
+            use_container_width=True,
+            key="do_index",
+        ):
+            progress = st.progress(0)
+            results = []
+            for i, uf in enumerate(uploaded):
+                with st.spinner(f"Procesez {uf.name}..."):
+                    res = ingestion.ingest_file_bytes(uf.read(), uf.name, force=force)
+                results.append(res)
+                progress.progress((i + 1) / len(uploaded))
 
-                st.cache_resource.clear()
-                st.rerun()
+            for r in results:
+                icon = {"ok": "✅", "skip": "⏭", "error": "❌"}[r["status"]]
+                msg = f"{icon} **{r['filename']}**"
+                if r["status"] == "ok":
+                    msg += f" — {r['chunks']} fragmente"
+                elif r.get("message"):
+                    msg += f" — {r['message']}"
+                st.write(msg)
 
-        # ── Setări avansate ───────────────────────────────────────────────────
-        with st.expander("⚙️ Setări avansate"):
-            st.session_state.show_chunks = st.toggle(
-                "Afișează fragmentele",
-                value=st.session_state.show_chunks,
-            )
-            st.session_state.show_rewritten = st.toggle(
-                "Afișează întrebarea reformulată",
-                value=st.session_state.show_rewritten,
-            )
+            st.cache_resource.clear()
+            st.rerun()
+
+    # ── Setări avansate ─────────────────────────────────────────────────────
+    with st.expander("⚙️ Setări avansate"):
+        st.session_state.show_chunks = st.toggle(
+            "Afișează fragmentele",
+            value=st.session_state.show_chunks,
+        )
+        st.session_state.show_rewritten = st.toggle(
+            "Afișează întrebarea reformulată",
+            value=st.session_state.show_rewritten,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -341,26 +358,40 @@ def _render_welcome():
     doc_count = vs.get_count()
     file_count = len(vs.get_ingested_files())
 
+    # Dacă nu există documente indexate: instrucțiuni doar pentru admin,
+    # mesaj neutru pentru utilizatorul obișnuit.
     if doc_count == 0:
-        st.markdown(
-            """
-            <div class="intro-box">
-            <h4>👋 Bun venit!</h4>
-            <p>Pentru a începe, adaugă regulamentele facultății:</p>
-            <ol>
-            <li>Pornește <code>ollama serve</code> dacă nu rulează</li>
-            <li>Încarcă fișiere PDF/DOCX/imagini din meniul lateral</li>
-            <li>Pune întrebarea ta!</li>
-            </ol>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if session.is_admin():
+            st.markdown(
+                """
+                <div class="intro-box">
+                <h4>👋 Bun venit (admin)!</h4>
+                <p>Nu există încă documente indexate. Pentru a începe:</p>
+                <ol>
+                <li>Pornește <code>ollama serve</code> dacă nu rulează</li>
+                <li>Deschide <strong>🔧 Panou administrare</strong> → „Adaugă documente"</li>
+                <li>Pune prima întrebare!</li>
+                </ol>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                """
+                <div class="intro-box">
+                <h4>👋 Bun venit la ClaudiuAI!</h4>
+                <p>Asistentul se pregătește momentan. Revino în curând pentru
+                a pune întrebări.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         return
 
     if user:
         greeting = f"Bun venit, <strong>{user.get('full_name') or user['username']}</strong>!"
-        sub = "Pune-mi orice întrebare despre regulamente."
+        sub = "Cu ce te pot ajuta astăzi?"
     else:
         remaining = session.guest_questions_remaining()
         greeting = "👋 <strong>Salut!</strong>"
@@ -374,13 +405,11 @@ def _render_welcome():
         <div class="intro-box">
         <h4>{greeting}</h4>
         <p>{sub}</p>
-        <p>Am acces la <strong>{doc_count} fragmente</strong> din
-        <strong>{file_count} documente</strong>.</p>
-        <p><strong>Exemple:</strong></p>
+        <p><strong>Întreabă-mă de exemplu:</strong></p>
         <ul>
         <li><em>„Care sunt condițiile de promovare?"</em></li>
         <li><em>„Cum se calculează media de licență?"</em></li>
-        <li><em>„Procedura de contestare a unei note?"</em></li>
+        <li><em>„Care e procedura de contestare a unei note?"</em></li>
         </ul>
         </div>
         """,
@@ -399,12 +428,9 @@ def render() -> None:
 
     user = session.get_current_user()
 
-    # ── Header ────────────────────────────────────────────────────────────────
-    st.title("🎓 Asistent Virtual Universitar")
-    st.caption(
-        "Răspunsuri din regulamentele oficiale, în română, "
-        "cu citare directă și memorie conversațională."
-    )
+    # ── Navbar + header ─────────────────────────────────────────────────────
+    render_navbar(active=session.PAGE_CHAT)
+    st.caption("Pune-mi o întrebare — îți răspund clar, în limba română.")
 
     # ── Avertizare guest limită ───────────────────────────────────────────────
     if not user:

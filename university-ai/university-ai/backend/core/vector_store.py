@@ -178,6 +178,7 @@ class VectorStore:
                 "page": meta.get("page", "?"),
                 "section": meta.get("section", ""),
                 "score": round(similarity, 4),
+                "extra": {"ocr": meta.get("ocr") == "1"},
             })
 
         return out
@@ -201,6 +202,7 @@ class VectorStore:
                 "source": meta.get("source", "?"),
                 "page": meta.get("page", "?"),
                 "section": meta.get("section", ""),
+                "extra": {"ocr": meta.get("ocr") == "1"},
             })
         return out
 

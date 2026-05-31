@@ -180,6 +180,58 @@ class HybridRetriever:
         self.bm25.build(docs)
         self._last_built_count = current_count
 
+    # ── Filtru de relevanță post-rerank ──────────────────────────────────────
+
+    @staticmethod
+    def _keep_relevant(ranked: List[dict]) -> List[dict]:
+        """
+        Păstrează doar fragmentele clar relevante după scorul cross-encoder.
+
+        Logica (robustă indiferent de scala scorurilor modelului):
+          • păstrăm întotdeauna fragmentul de top (cel mai bun);
+          • păstrăm fragmentele următoare DOAR cât timp scorul lor rămâne
+            ≥ rerank_keep_ratio × scorul de top ȘI este pozitiv;
+          • lista e deja sortată descrescător, deci ne oprim la prima cădere
+            sub prag (restul sunt și mai mici).
+
+        Efect: pentru o întrebare cu o singură sursă relevantă, returnăm o
+        singură sursă — nu mai apar surse parazite cu scor aproape zero.
+        """
+        if not ranked:
+            return ranked
+        # Fără scor de rerank (reranker dezactivat/eșuat) → nu filtrăm aici
+        if "rerank_score" not in ranked[0]:
+            return ranked
+
+        top_score = ranked[0].get("rerank_score", 0.0)
+        kept = [ranked[0]]
+
+        # Dacă nici cel mai bun fragment nu pare relevant (scor ≤ 0), întoarcem
+        # doar vârful — LLM-ul va spune onest că nu a găsit informația.
+        if top_score <= 0:
+            HybridRetriever._log_dropped(ranked, kept)
+            return kept
+
+        threshold = top_score * settings.rerank_keep_ratio
+        for r in ranked[1:]:
+            score = r.get("rerank_score", 0.0)
+            if score >= threshold and score > 0:
+                kept.append(r)
+            else:
+                break  # scoruri descrescătoare → restul sunt sub prag
+
+        HybridRetriever._log_dropped(ranked, kept)
+        return kept
+
+    @staticmethod
+    def _log_dropped(ranked: List[dict], kept: List[dict]) -> None:
+        dropped = len(ranked) - len(kept)
+        if dropped > 0:
+            logger.debug(
+                "Filtru relevanță: păstrate {} / {} fragmente (eliminate {} irelevante)",
+                len(kept), len(ranked), dropped,
+            )
+
     # ── Public API ───────────────────────────────────────────────────────────
 
     def retrieve(
@@ -223,13 +275,18 @@ class HybridRetriever:
         if self.reranker.is_enabled() and merged:
             # Limităm la 20 candidați pentru rerank (cost vs. acuratețe)
             ranked = self.reranker.rerank(question, merged[:20], top_n=final_top_k)
+            # Cross-encoder-ul a evaluat deja relevanța reală a fiecărui fragment;
+            # NU mai filtrăm după scorul dense (fragmentele găsite doar prin BM25
+            # au score=0.0 și ar fi eliminate eronat, deși sunt relevante).
+            # Aplicăm însă un prag RELATIV pe scorul de rerank, ca să eliminăm
+            # fragmentele clar irelevante (și deci sursele lor parazite).
+            result = self._keep_relevant(ranked)
         else:
             ranked = merged[:final_top_k]
-
-        # 5. Filtru de scor minim (pe scorul dense, pentru consistență)
-        filtered = [r for r in ranked if r.get("score", 1.0) >= settings.min_score]
-        # Dacă filtrul lasă totul gol, întoarcem totuși ce am găsit
-        result = filtered if filtered else ranked
+            # Fără rerank, filtrăm după scorul dense ca prag minim de relevanță.
+            filtered = [r for r in ranked if r.get("score", 1.0) >= settings.min_score]
+            # Dacă filtrul lasă totul gol, întoarcem totuși ce am găsit
+            result = filtered if filtered else ranked
 
         logger.info(
             "Retrieval pentru '{}': {} fragmente finale ({:.0f}ms)",

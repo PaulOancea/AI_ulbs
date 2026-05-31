@@ -43,6 +43,7 @@ class IngestionService:
                 text=page_data.text,
                 source=display_name,
                 page=page_data.page,
+                is_ocr=bool(page_data.extra.get("ocr")),
             )
             all_chunks.extend(chunks)
 

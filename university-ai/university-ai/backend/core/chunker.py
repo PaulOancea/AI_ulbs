@@ -36,6 +36,9 @@ RE_ARTICLE = re.compile(
 RE_CHAPTER = re.compile(r"(?im)^\s*capitolul\s+([ivxlcdm]+|\d+)\b")
 RE_SECTION = re.compile(r"(?im)^\s*sec[țt]iunea\s+(\d+|[ivxlcdm]+)\b")
 
+# Un rând dintr-un tabel markdown: "| celulă | celulă |"
+RE_MD_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+
 
 @dataclass
 class Chunk:
@@ -45,6 +48,7 @@ class Chunk:
     page: int
     section: Optional[str] = None  # ex: "Art. 17" sau "Capitolul II"
     chunk_index: int = 0
+    is_ocr: bool = False           # provine dintr-o pagină/imagine procesată OCR
 
     def to_metadata(self) -> dict:
         """Convertește în dict pentru ChromaDB (toate valorile string)."""
@@ -53,6 +57,7 @@ class Chunk:
             "page": str(self.page),
             "section": self.section or "",
             "chunk_index": str(self.chunk_index),
+            "ocr": "1" if self.is_ocr else "",
         }
 
 
@@ -145,9 +150,60 @@ class LegalAwareChunker:
 
         return segments
 
+    # ── Split table-aware ─────────────────────────────────────────────────────
+
+    def _split_table_segment(self, segment: str) -> List[str]:
+        """
+        Împarte un segment ce conține un tabel markdown, REPETÂND antetul
+        (marcajul „[Tabel N]" + rândul de capete de coloană + separatorul) în
+        fiecare bucată. Astfel, niciun chunk de tabel nu rămâne fără context de
+        coloane — esențial ca LLM-ul să poată citi corect un rând.
+
+        Textul narativ dinaintea tabelului e emis ca chunk(uri) separat(e).
+        Dacă segmentul nu pare un tabel, revine la splitter-ul clasic.
+        """
+        lines = segment.split("\n")
+        row_flags = [bool(RE_MD_TABLE_ROW.match(l)) for l in lines]
+        if sum(row_flags) < 3:  # prea puține rânduri → nu e un tabel real
+            return self._fallback.split_text(segment)
+
+        first = row_flags.index(True)
+        has_sep = (first + 1 < len(lines)) and row_flags[first + 1]
+        header = lines[first]
+        sep = lines[first + 1] if has_sep else None
+        data_start = first + (2 if has_sep else 1)
+        data_rows = [lines[i] for i in range(data_start, len(lines)) if row_flags[i]]
+
+        out: List[str] = []
+
+        # Preambul: separăm marcajul "[Tabel N]" de eventualul text narativ
+        preamble = lines[:first]
+        marker = "\n".join(l for l in preamble if l.strip().startswith("[Tabel")).strip()
+        narrative = "\n".join(l for l in preamble if not l.strip().startswith("[Tabel")).strip()
+        if len(narrative) >= 40:
+            out.extend(self._fallback.split_text(narrative))
+
+        head_parts = [p for p in (marker, header, sep) if p]
+        head_block = "\n".join(head_parts)
+        base_len = len(head_block)
+
+        cur: List[str] = []
+        cur_len = base_len
+        for row in data_rows:
+            if cur and cur_len + len(row) + 1 > self.chunk_size:
+                out.append(head_block + "\n" + "\n".join(cur))
+                cur = []
+                cur_len = base_len
+            cur.append(row)
+            cur_len += len(row) + 1
+        if cur:
+            out.append(head_block + "\n" + "\n".join(cur))
+
+        return out
+
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def chunk(self, text: str, source: str, page: int = 1) -> List[Chunk]:
+    def chunk(self, text: str, source: str, page: int = 1, is_ocr: bool = False) -> List[Chunk]:
         """
         Returnează lista de Chunk-uri pentru un text dat.
 
@@ -179,12 +235,15 @@ class LegalAwareChunker:
                         page=page,
                         section=detect_section(segment),
                         chunk_index=chunk_idx,
+                        is_ocr=is_ocr,
                     ))
                     chunk_idx += 1
                 continue
 
-            # Altfel, segmentul e prea mare → folosim fallback
-            sub_chunks = self._fallback.split_text(segment)
+            # Altfel, segmentul e prea mare → îl tăiem.
+            # Dacă e un tabel, folosim splitter-ul table-aware (repetă antetul);
+            # altfel splitter-ul recursiv clasic.
+            sub_chunks = self._split_table_segment(segment)
             section_label = detect_section(segment)  # eticheta articolului
 
             for sub in sub_chunks:
@@ -197,6 +256,7 @@ class LegalAwareChunker:
                         # subchunk-urile moștenesc eticheta articolului-părinte
                         section=detect_section(sub) or section_label,
                         chunk_index=chunk_idx,
+                        is_ocr=is_ocr,
                     ))
                     chunk_idx += 1
 

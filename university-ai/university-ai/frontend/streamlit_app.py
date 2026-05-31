@@ -35,14 +35,14 @@ from frontend.views import home as home_view
 # ═══════════════════════════════════════════════════════════════════════════════
 
 st.set_page_config(
-    page_title="🎓 AI Universitar",
-    page_icon="🎓",
+    page_title="ClaudiuAI",
+    page_icon="💬",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
         "Get Help": None,
         "Report a bug": None,
-        "About": "Asistent Virtual Universitar — proiect academic RAG.",
+        "About": "ClaudiuAI — asistentul tău conversațional inteligent.",
     },
 )
 

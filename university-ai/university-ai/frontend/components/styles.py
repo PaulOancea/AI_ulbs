@@ -178,6 +178,32 @@ section[data-testid="stChatInput"] textarea:focus {
     80%, 100% { content: '...'; }
 }
 
+/* ═══ NAVBAR + BRAND ═══ */
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 100%;
+    min-height: 48px;
+}
+.brand-name {
+    font-weight: 800;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+    line-height: 1;
+}
+.brand-accent {
+    background: var(--gradient-hero);
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.nav-rule {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+    margin: 6px 0 22px;
+}
+
 /* ═══ HOME PAGE — HERO ═══ */
 .hero-container {
     text-align: center;
@@ -189,6 +215,28 @@ section[data-testid="stChatInput"] textarea:focus {
     margin-bottom: 40px;
     position: relative;
     overflow: hidden;
+}
+.hero-logo {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 28px;
+}
+.hero-logo .brand { justify-content: center; }
+.cta-banner {
+    text-align: center;
+    padding: 28px;
+    background: var(--gradient-card);
+    border: 1px solid rgba(67, 97, 238, 0.3);
+    border-radius: 16px;
+    margin-bottom: 16px;
+}
+.cta-banner h3 {
+    margin: 0 0 6px 0;
+    color: var(--text-primary);
+}
+.cta-banner p {
+    margin: 0;
+    color: var(--text-secondary);
 }
 .hero-badge {
     display: inline-block;

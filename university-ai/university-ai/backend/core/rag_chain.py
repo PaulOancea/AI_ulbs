@@ -15,6 +15,7 @@ Flux complet la o întrebare:
     8. Logare metrice (timp, număr fragmente, sursă)
 """
 
+import re
 import time
 from typing import AsyncGenerator, Generator, List, Optional, Tuple
 
@@ -75,15 +76,34 @@ class RAGChain:
         if not settings.memory_enabled or len(memory) == 0:
             return question
 
-        # Heuristică simplă: dacă întrebarea e foarte scurtă SAU începe cu
-        # cuvinte care sugerează dependență contextuală
-        short = len(question.split()) < 8
+        # Heuristică conservatoare: rescriem DOAR când întrebarea pare să depindă
+        # explicit de context. NU rescriem întrebări scurte dar auto-suficiente
+        # (ex: "Cine este Florea Adrian", "Care sunt condițiile de promovare?",
+        # "Cât e 1+1?") — altfel LLM-ul le distorsionează inutil.
+        q_lower = question.lower().strip()
+
+        # Markeri la început de propoziție care semnalează o continuare
         contextual_starts = (
-            "dar", "iar", "și ", "şi ", "el ", "ea ", "acest", "aceast",
-            "atunci", "în acest caz", "in acest caz", "la fel",
+            "dar ", "iar ", "și ", "şi ", "acest", "aceast", "atunci",
+            "în acest caz", "in acest caz", "la fel", "în acela", "in acela",
+            "dar la", "și la", "şi la", "dar pentru", "și pentru", "şi pentru",
             "la ce", "cum așa", "de ce așa",
         )
-        is_contextual = short or question.lower().startswith(contextual_starts)
+        # Pronume/referințe contextuale care, într-o întrebare scurtă, indică
+        # dependență de un subiect menționat anterior
+        contextual_tokens = {
+            "el", "ea", "ei", "ele", "lui", "acela", "aceea",
+            "acesta", "aceasta", "acestea", "aceștia", "acestia", "asta",
+            "acolo", "atunci",
+        }
+
+        # Tokenizăm fără punctuație, ca "lui?" / "el." să fie recunoscute
+        word_tokens = set(re.findall(r"\w+", q_lower, re.UNICODE))
+        n_words = len(q_lower.split())
+        starts_contextual = q_lower.startswith(contextual_starts)
+        has_contextual_token = bool(word_tokens & contextual_tokens)
+        # Foarte scurtă + pronume ⇒ probabil follow-up ("Și media lui?")
+        is_contextual = starts_contextual or (n_words < 6 and has_contextual_token)
         if not is_contextual:
             return question
 

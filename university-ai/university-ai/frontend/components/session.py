@@ -38,6 +38,7 @@ def init_session() -> None:
         "selected_model": settings.ollama_model,
         "show_chunks": False,
         "show_rewritten": True,
+        "show_admin_panel": False,          # panoul tehnic (doar admin)
         "auth_error": None,                 # mesaj de eroare pentru forms
         "auth_success": None,               # mesaj de succes
     }
@@ -71,6 +72,15 @@ def get_current_user() -> Optional[dict]:
 
 def is_authenticated() -> bool:
     return get_current_user() is not None
+
+
+def is_admin() -> bool:
+    """True dacă utilizatorul logat are rol de administrator (vezi ADMIN_USERNAMES)."""
+    user = get_current_user()
+    if not user:
+        return False
+    admins = {u.lower() for u in settings.admin_usernames}
+    return (user.get("username") or "").lower() in admins
 
 
 def login_user(user: dict) -> None:
