@@ -12,7 +12,10 @@ Strategia de prompt engineering:
   • cerință de citare a articolului/paginii.
 """
 
-from typing import List
+import re
+from typing import List, Optional
+
+from backend.text_utils import normalize
 
 # ─── Prompt sistem principal ──────────────────────────────────────────────────
 
@@ -27,8 +30,14 @@ NU folosești cunoștințe externe sau supoziții.
 2. **LIMBA**: Răspunzi ÎNTOTDEAUNA în limba română, indiferent de limba întrebării. \
 Folosești diacritice corecte (ă, â, î, ș, ț).
 
-3. **TONUL**: Academic, politicos, clar și de ajutor. Te adresezi studentului \
-folosind „dumneavoastră" sau ton neutru-formal. Eviți colocvialismele.
+3. **TON ADAPTIV (oglindește utilizatorul)**: Adaptează registrul și tonul la \
+cel folosit de utilizator în întrebarea sa:
+   • dacă scrie formal/academic → răspunzi formal, politicos, cu „dumneavoastră";
+   • dacă scrie relaxat sau folosește apelative prietenoase/jucăușe \
+(ex: „șefule", „regele meu", „frate", „bossule") → răspunzi călduros și natural, \
+în ACELAȘI registru, și poți relua cu măsură apelativul (ex: „Sigur, șefule!");
+   • indiferent de ton, păstrezi ÎNTOTDEAUNA acuratețea, claritatea și sensul — \
+tonul schimbă doar stilul, niciodată corectitudinea informației.
 
 4. **ONESTITATE**: Dacă informația NU se găsește în context, răspunzi clar:
    „Pe baza documentelor disponibile, nu am găsit o informație explicită privind …. \
@@ -47,6 +56,12 @@ Le redai exact așa cum apar în document.
 8. **DOMENIU**: Răspunzi doar la întrebări legate de universitate, studii, \
 regulamente, proceduri administrative. Pentru întrebări nelegate, redirecționezi \
 politicos.
+
+9. **FĂRĂ ENTITĂȚI DUPLICATE**: Dacă același nume sau aceeași entitate apare în \
+mai multe rânduri ale unui tabel sau în mai multe fragmente, este ACEEAȘI persoană/entitate \
+în contexte diferite (ex: un profesor care predă la mai multe departamente, programe \
+sau ani de studiu) — NU persoane diferite. Nu inventa duplicate; în schimb, enumeră \
+contextele în care apare (ex: „Prof. X predă la programele A și B").
 
 ═══ STIL ═══
 
@@ -107,12 +122,61 @@ def build_query_rewrite_prompt(history_str: str, new_question: str) -> str:
     )
 
 
+# ─── Detectare ton / apelativ (pentru oglindirea registrului) ─────────────────
+
+# cheie (normalizată, fără diacritice) → formă de afișat în răspuns
+_APPELLATIVES = {
+    "sefule": "șefule", "sefu": "șefu", "sefa": "șefa",
+    "boss": "boss", "bossule": "bossule",
+    "regele meu": "regele meu", "regina mea": "regina mea",
+    "frate": "frate", "fratioare": "frățioare", "frate-meu": "frate",
+    "frumosule": "frumosule", "maestre": "maestre", "campionule": "campionule",
+    "prietene": "prietene", "amice": "amice", "nene": "nene",
+    "baiatule": "băiatule", "omule": "omule",
+}
+
+
+def detect_appellative(question: str) -> Optional[str]:
+    """Detectează un apelativ familiar/jucăuș folosit de utilizator (sau None)."""
+    qn = normalize(question)  # lowercase + fără diacritice
+    for key, display in _APPELLATIVES.items():
+        if re.search(rf"\b{re.escape(key)}\b", qn):
+            return display
+    return None
+
+
+def build_tone_instruction(question: str) -> str:
+    """
+    Instrucțiune GENERALĂ de oglindire a tonului, plasată la finalul promptului
+    (recency). NU forțează un cuvânt anume și nu se limitează la o listă fixă —
+    cere modelului să preia EXACT registrul și modul de adresare ale utilizatorului,
+    oricare ar fi el, și să le integreze natural în răspuns.
+    """
+    instr = (
+        "\n\n[ADAPTARE TON] Foarte important: răspunde în ACELAȘI registru și stil "
+        "în care ți-a scris utilizatorul în întrebarea de mai sus. Citește cum ți se "
+        "adresează și oglindește-l: dacă e formal, fii formal; dacă e relaxat, glumeț "
+        "sau folosește un apelativ (oricare ar fi el: 'șefule', 'regele meu', 'frate', "
+        "'maestre' etc.), preia EXACT același mod de adresare al lui și integrează-l "
+        "FIRESC chiar în formula de salut sau pe parcursul răspunsului — de ex. începe "
+        "cu 'Sigur, șefule! ...'. NU adăuga apelativul ca etichetă între paranteze la "
+        "final. Tonul schimbă doar stilul, niciodată corectitudinea informației."
+    )
+    if detect_appellative(question):
+        instr += (
+            " Utilizatorul ți s-a adresat familiar și prietenos — răspunde-i la fel de "
+            "cald, reluând firesc exact apelativul pe care l-a folosit el."
+        )
+    return instr
+
+
 # ─── Construirea promptului RAG principal ─────────────────────────────────────
 
 def build_rag_prompt(
     question: str,
     chunks: List[dict],
     conversation_history: str = "",
+    context_label: str = "CONTEXT DIN DOCUMENTE OFICIALE:",
 ) -> str:
     """
     Construiește promptul complet pentru generarea răspunsului.
@@ -123,6 +187,9 @@ def build_rag_prompt(
       [CONTEXT: fragmente cu sursa + pagina + articolul]
       [Întrebarea curentă]
       [Apel la răspuns]
+
+    `context_label` permite schimbarea antetului de context (ex: pentru un
+    document atașat de utilizator, nu unul „oficial").
     """
     # Construim secțiunea de context cu numerotare clară
     context_blocks = []
@@ -149,15 +216,17 @@ def build_rag_prompt(
 
     parts.append(
         "═══════════════════════════════════════════════════════════════\n"
-        "CONTEXT DIN DOCUMENTE OFICIALE:"
+        f"{context_label}"
         f"{context}\n"
         "═══════════════════════════════════════════════════════════════"
     )
 
+    tone_instruction = build_tone_instruction(question)
+
     parts.append(
-        f"ÎNTREBAREA STUDENTULUI: {question}\n\n"
-        f"RĂSPUNSUL TĂU (în limba română, ton academic, "
-        f"bazat STRICT pe contextul de mai sus):"
+        f"ÎNTREBAREA UTILIZATORULUI: {question}{tone_instruction}\n\n"
+        f"RĂSPUNSUL TĂU (în limba română, bazat STRICT pe contextul de mai sus, "
+        f"pe tonul utilizatorului):"
     )
 
     return "\n\n".join(parts)

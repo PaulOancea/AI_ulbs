@@ -126,6 +126,31 @@ class RAGChain:
             logger.info("Niciun chunk relevant pentru: '{}'", question[:80])
         return chunks
 
+    def _rank_attached(self, question: str, attached_chunks: List[dict]) -> List[dict]:
+        """
+        Selectează cele mai relevante fragmente dintr-un document ATAȘAT de
+        utilizator (context efemer, nu din baza vectorială globală).
+        """
+        cands = [dict(c) for c in attached_chunks if c.get("text")]
+        if not cands:
+            return []
+        reranker = self.retriever.reranker
+        if reranker.is_enabled():
+            # Reranker-ul ordonează după relevanță reală; păstrăm top-K din doc.
+            return reranker.rerank(question, cands, top_n=settings.final_top_k)
+        return cands[: settings.final_top_k]
+
+    def _build_context(
+        self, effective_q: str, attached_chunks: Optional[List[dict]],
+    ) -> Tuple[List[dict], str]:
+        """Întoarce (fragmente, etichetă_context) în funcție de sursă."""
+        if attached_chunks:
+            return (
+                self._rank_attached(effective_q, attached_chunks),
+                "DOCUMENT ATAȘAT DE UTILIZATOR:",
+            )
+        return self._retrieve(effective_q), "CONTEXT DIN DOCUMENTE OFICIALE:"
+
     # ── Generare sincronă ────────────────────────────────────────────────────
 
     def answer(
@@ -133,6 +158,7 @@ class RAGChain:
         question: str,
         session_id: str = "default",
         model: Optional[str] = None,
+        attached_chunks: Optional[List[dict]] = None,
     ) -> dict:
         """Răspuns complet (fără streaming). Returnează dict-ul ChatResponse."""
         t0 = time.time()
@@ -145,7 +171,7 @@ class RAGChain:
         effective_q = self._maybe_rewrite(question, memory, model)
         rewritten = effective_q if effective_q != question else None
 
-        chunks = self._retrieve(effective_q)
+        chunks, context_label = self._build_context(effective_q, attached_chunks)
         if not chunks:
             raise EmptyContextError()
 
@@ -153,6 +179,7 @@ class RAGChain:
             question=question,  # întrebarea originală a studentului
             chunks=chunks,
             conversation_history=memory.get_context_str() if settings.memory_enabled else "",
+            context_label=context_label,
         )
 
         logger.debug("Trimit prompt către Ollama ({} caractere)", len(prompt))
@@ -186,6 +213,7 @@ class RAGChain:
         question: str,
         session_id: str = "default",
         model: Optional[str] = None,
+        attached_chunks: Optional[List[dict]] = None,
     ) -> Tuple[Generator[str, None, None], dict]:
         """
         Returnează (generator_de_tokens, metadata).
@@ -203,7 +231,7 @@ class RAGChain:
         effective_q = self._maybe_rewrite(question, memory, model)
         rewritten = effective_q if effective_q != question else None
 
-        chunks = self._retrieve(effective_q)
+        chunks, context_label = self._build_context(effective_q, attached_chunks)
         if not chunks:
             raise EmptyContextError()
 
@@ -211,6 +239,7 @@ class RAGChain:
             question=question,
             chunks=chunks,
             conversation_history=memory.get_context_str() if settings.memory_enabled else "",
+            context_label=context_label,
         )
 
         sources = sorted({c["source"] for c in chunks})
@@ -237,6 +266,7 @@ class RAGChain:
         question: str,
         session_id: str = "default",
         model: Optional[str] = None,
+        attached_chunks: Optional[List[dict]] = None,
     ) -> AsyncGenerator[dict, None]:
         """
         Yield-uri de forma:
@@ -256,7 +286,7 @@ class RAGChain:
             effective_q = self._maybe_rewrite(question, memory, model)
             rewritten = effective_q if effective_q != question else None
 
-            chunks = self._retrieve(effective_q)
+            chunks, context_label = self._build_context(effective_q, attached_chunks)
             if not chunks:
                 raise EmptyContextError()
 
@@ -275,6 +305,7 @@ class RAGChain:
                 question=question,
                 chunks=chunks,
                 conversation_history=memory.get_context_str() if settings.memory_enabled else "",
+                context_label=context_label,
             )
 
             full_answer = ""

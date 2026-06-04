@@ -39,6 +39,14 @@ def init_session() -> None:
         "show_chunks": False,
         "show_rewritten": True,
         "show_admin_panel": False,          # panoul tehnic (doar admin)
+        "editing_index": None,              # indexul mesajului în curs de editare
+        "pending_question": None,           # întrebare de procesat (ex: după editare)
+        "pending_form": None,               # cerere în curs de completare {source,title}
+        "attached_chunks": [],              # fragmente din documentul atașat în chat
+        "attached_names": [],               # numele documentelor atașate
+        "attach_uploader_version": 0,       # versiune cheie uploader (reset widget)
+        "chat_search": "",                  # filtru căutare după titlu
+        "show_archived": False,             # afișează și conversațiile arhivate
         "auth_error": None,                 # mesaj de eroare pentru forms
         "auth_success": None,               # mesaj de succes
     }
@@ -93,6 +101,9 @@ def login_user(user: dict) -> None:
     st.session_state.messages = []
     st.session_state.active_chat_id = None
     st.session_state.active_session_id = uuid.uuid4().hex[:16]
+    st.session_state.editing_index = None
+    st.session_state.pending_form = None
+    clear_attachments()
 
 
 def logout_user() -> None:
@@ -102,6 +113,9 @@ def logout_user() -> None:
     st.session_state.messages = []
     st.session_state.guest_questions_used = 0
     st.session_state.active_session_id = uuid.uuid4().hex[:16]
+    st.session_state.editing_index = None
+    st.session_state.pending_form = None
+    clear_attachments()
 
 
 # ── Guest limits ──────────────────────────────────────────────────────────────
@@ -126,12 +140,28 @@ def guest_limit_reached() -> bool:
 
 # ── Chat curent ───────────────────────────────────────────────────────────────
 
-def set_active_chat(chat_id: Optional[int], session_id: Optional[str] = None) -> None:
+def clear_attachments() -> None:
+    """Golește documentele atașate (atașamentele sunt per-conversație)."""
+    st.session_state.attached_chunks = []
+    st.session_state.attached_names = []
+
+
+def set_active_chat(
+    chat_id: Optional[int],
+    session_id: Optional[str] = None,
+    clear_attached: bool = True,
+) -> None:
     st.session_state.active_chat_id = chat_id
     if session_id:
         st.session_state.active_session_id = session_id
     else:
         st.session_state.active_session_id = uuid.uuid4().hex[:16]
+    # Starea de editare e mereu resetată; atașamentele se păstrează doar când
+    # „promovăm" sesiunea curentă într-un chat nou (clear_attached=False).
+    st.session_state.editing_index = None
+    if clear_attached:
+        clear_attachments()
+        st.session_state.pending_form = None
 
 
 def get_user_initials(user: dict) -> str:

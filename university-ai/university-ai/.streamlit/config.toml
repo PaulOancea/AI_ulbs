@@ -1,0 +1,17 @@
+# Configurație Streamlit pentru ClaudiuAI
+#
+# fileWatcherType = "none":
+#   Dezactivează watcher-ul de fișiere. Motiv: cu biblioteci ML grele
+#   (torch / transformers / sentence-transformers), watcher-ul inspectează
+#   submodulele „transformers.models.*" și încearcă să importe torchvision
+#   (neinstalat) — generând zeci de mesaje „ModuleNotFoundError: torchvision".
+#   Mesajele sunt inofensive, dar zgomotoase. Dezactivarea watcher-ului le elimină.
+#
+#   NOTĂ: fără watcher nu mai există auto-reload. Oricum, modificările din
+#   `backend/` necesită repornirea completă a serverului. Pentru a re-activa
+#   hot-reload-ul (doar pentru `frontend/`), schimbă valoarea în "auto".
+[server]
+fileWatcherType = "none"
+
+[logger]
+level = "info"

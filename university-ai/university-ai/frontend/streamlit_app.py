@@ -83,6 +83,13 @@ PAGE_DISPATCH = {
 
 
 def main():
+    # Conversație partajată public (read-only) prin ?share=<token> — fără auth
+    share_token = st.query_params.get("share")
+    if share_token:
+        from frontend.views import shared as shared_view
+        shared_view.render(share_token)
+        return
+
     current = session.current_page()
     render_func = PAGE_DISPATCH.get(current, home_view.render)
     render_func()

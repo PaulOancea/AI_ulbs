@@ -10,10 +10,12 @@ Există două puncte de intrare:
 """
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import List
 
+from backend.config import settings
 from backend.core.chunker import Chunk, default_chunker
 from backend.core.loaders import SUPPORTED_EXTENSIONS, load_document
 from backend.core.vector_store import VectorStore
@@ -26,6 +28,25 @@ class IngestionService:
 
     def __init__(self, vector_store: VectorStore = None):
         self.vs = vector_store or VectorStore()
+
+    # ── Helper: salvează o copie a fișierului original ───────────────────────
+
+    @staticmethod
+    def _save_original_bytes(filename: str, data: bytes) -> None:
+        """Păstrează fișierul original (pentru completarea cu păstrarea layout-ului)."""
+        try:
+            dest = settings.originals_folder_abs / Path(filename).name
+            dest.write_bytes(data)
+        except Exception as exc:
+            logger.warning("Nu am putut salva originalul {}: {}", filename, exc)
+
+    @staticmethod
+    def _save_original_path(path: Path) -> None:
+        try:
+            dest = settings.originals_folder_abs / path.name
+            shutil.copyfile(path, dest)
+        except Exception as exc:
+            logger.warning("Nu am putut copia originalul {}: {}", path.name, exc)
 
     # ── Helper: procesează un singur fișier ──────────────────────────────────
 
@@ -49,6 +70,43 @@ class IngestionService:
 
         logger.info("{}: {} pagini → {} chunks", display_name, len(pages), len(all_chunks))
         return all_chunks
+
+    # ── Public: extragere fără indexare (documente atașate în chat) ──────────
+
+    def extract_chunks_from_bytes(self, file_bytes: bytes, filename: str) -> List[dict]:
+        """
+        Extrage și împarte în fragmente un document, FĂRĂ a-l adăuga în baza
+        vectorială. Folosit pentru documentele atașate de utilizator într-o
+        conversație (context efemer, nu persistent/global).
+
+        Returnează listă de dict-uri {text, source, page, section} — pregătite
+        pentru a fi folosite direct ca context de către RAGChain.
+        """
+        ext = Path(filename).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            raise DocumentProcessingError(f"Format nesuportat: {ext}")
+
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = Path(tmp.name)
+
+        try:
+            chunks = self._process_file(tmp_path, display_name=filename)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        return [
+            {
+                "text": c.text,
+                "source": c.source,
+                "page": c.page,
+                "section": c.section or "",
+            }
+            for c in chunks
+        ]
 
     # ── Public: ingestie fișier pe disc ──────────────────────────────────────
 
@@ -82,6 +140,10 @@ class IngestionService:
                 "message": "Niciun fragment extras (document gol sau scanat?).",
             }
 
+        self._save_original_path(path_obj)
+        # Ștergem eventualele fragmente vechi ale aceluiași fișier (re-indexare)
+        # ca să NU se dubleze conținutul în baza vectorială.
+        self.vs.delete_by_source(filename)
         added = self.vs.add_chunks(chunks)
         self.vs.mark_ingested(filename, added)
 
@@ -138,6 +200,10 @@ class IngestionService:
                 "message": "Niciun fragment extras.",
             }
 
+        self._save_original_bytes(filename, file_bytes)
+        # Ștergem eventualele fragmente vechi ale aceluiași fișier (re-indexare)
+        # ca să NU se dubleze conținutul în baza vectorială.
+        self.vs.delete_by_source(filename)
         added = self.vs.add_chunks(chunks)
         self.vs.mark_ingested(filename, added)
         return {"status": "ok", "filename": filename, "chunks": added}

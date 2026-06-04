@@ -29,11 +29,15 @@ class Settings(BaseSettings):
     # ── Ollama LLM ────────────────────────────────────────────────────────────
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
-    ollama_timeout: int = 180
+    # Timeout generos: pe CPU, modelele mari (7–8B) pot dura câteva minute,
+    # mai ales la prima cerere (încărcarea modelului în memorie).
+    ollama_timeout: int = 600
+    ollama_connect_timeout: int = 10
     ollama_temperature: float = 0.1
     ollama_top_p: float = 0.9
     ollama_num_predict: int = 2000
-    ollama_repeat_penalty: float = 1.1
+    ollama_repeat_penalty: float = 1.15
+    ollama_repeat_last_n: int = 256   # fereastra pentru penalizarea repetiției
 
     # ── Embeddings ────────────────────────────────────────────────────────────
     embed_model: str = "paraphrase-multilingual-mpnet-base-v2"
@@ -80,6 +84,9 @@ class Settings(BaseSettings):
 
     # ── Documente ─────────────────────────────────────────────────────────────
     docs_folder: str = "./documente"
+    # Copiile originale ale documentelor (pentru completarea cererilor .docx
+    # cu păstrarea layout-ului)
+    originals_folder: str = "./data/originals"
 
     # ── OCR (PDF-uri scanate + imagini) ──────────────────────────────────────
     ocr_enabled: bool = True
@@ -140,6 +147,10 @@ class Settings(BaseSettings):
         return Path(self.docs_folder).resolve()
 
     @property
+    def originals_folder_abs(self) -> Path:
+        return Path(self.originals_folder).resolve()
+
+    @property
     def database_path_abs(self) -> Path:
         return Path(self.database_path).resolve()
 
@@ -160,3 +171,4 @@ settings.chroma_path_abs.mkdir(parents=True, exist_ok=True)
 settings.log_dir_abs.mkdir(parents=True, exist_ok=True)
 settings.docs_folder_abs.mkdir(parents=True, exist_ok=True)
 settings.database_path_abs.parent.mkdir(parents=True, exist_ok=True)
+settings.originals_folder_abs.mkdir(parents=True, exist_ok=True)

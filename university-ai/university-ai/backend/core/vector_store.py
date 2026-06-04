@@ -206,6 +206,55 @@ class VectorStore:
             })
         return out
 
+    def get_documents_by_source(self, source: str) -> List[dict]:
+        """
+        Returnează fragmentele unui document, ORDONATE după pagină și chunk_index
+        și DEDUPLICATE după text — pentru a reasambla textul integral (ex: șablonul
+        unei cereri) fără dublarea cauzată de eventuale fragmente duplicate.
+        """
+        if self.collection.count() == 0:
+            return []
+        try:
+            results = self.collection.get(
+                where={"source": source},
+                include=["documents", "metadatas"],
+            )
+        except Exception as exc:
+            logger.warning("get_documents_by_source({}) a eșuat: {}", source, exc)
+            return []
+
+        out: List[dict] = []
+        seen_text = set()
+        for doc, meta in zip(results["documents"], results["metadatas"]):
+            key = (doc or "").strip()
+            if key in seen_text:
+                continue  # fragment duplicat → îl sărim (evită dublarea)
+            seen_text.add(key)
+            out.append({
+                "text": doc,
+                "page": meta.get("page", "0"),
+                "chunk_index": meta.get("chunk_index", "0"),
+            })
+
+        def _order(d: dict):
+            def _int(v):
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    return 0
+            return (_int(d["page"]), _int(d["chunk_index"]))
+
+        out.sort(key=_order)
+        return out
+
+    def delete_by_source(self, source: str) -> None:
+        """Șterge toate fragmentele unui document (folosit la re-indexare)."""
+        try:
+            self.collection.delete(where={"source": source})
+            logger.info("Fragmente șterse pentru re-indexare: {}", source)
+        except Exception as exc:
+            logger.warning("delete_by_source({}) a eșuat: {}", source, exc)
+
     # ── Administrare ─────────────────────────────────────────────────────────
 
     def get_count(self) -> int:

@@ -54,7 +54,38 @@ def _ollama_options(temperature: float = None) -> dict:
         "top_p": settings.ollama_top_p,
         "num_predict": settings.ollama_num_predict,
         "repeat_penalty": settings.ollama_repeat_penalty,
+        "repeat_last_n": settings.ollama_repeat_last_n,
     }
+
+
+def _ollama_error_detail(resp) -> str:
+    """Extrage mesajul de eroare din corpul răspunsului Ollama (dacă există)."""
+    try:
+        data = resp.json()
+        if isinstance(data, dict) and data.get("error"):
+            return str(data["error"])
+    except Exception:
+        pass
+    try:
+        return (resp.text or "").strip()[:300]
+    except Exception:
+        return ""
+
+
+def _friendly_ollama_error(status: int, detail: str) -> str:
+    """Transformă o eroare HTTP Ollama într-un mesaj clar, acționabil (RO)."""
+    d = (detail or "").lower()
+    if "memory" in d or "out of memory" in d or "too large" in d:
+        return (
+            "Modelul este prea mare pentru memoria RAM disponibilă. "
+            "Folosește un model mai mic — de ex. rulează ollama pull llama3.2:3b "
+            "și selectează-l din Panou administrare -> Model AI (sau setează "
+            "OLLAMA_MODEL=llama3.2:3b în .env). Poți și să închizi alte aplicații "
+            "ori să dezactivezi reranker-ul (RERANKER_ENABLED=false) pentru a elibera memorie."
+        )
+    if detail:
+        return f"Ollama a întors o eroare (HTTP {status}): {detail}"
+    return f"Ollama a întors HTTP {status}."
 
 
 # ── Generare sincronă (non-streaming) ─────────────────────────────────────────
@@ -73,7 +104,7 @@ def generate(prompt: str, model: str = None, temperature: float = None) -> str:
         r = requests.post(
             settings.ollama_generate_url,
             json=payload,
-            timeout=settings.ollama_timeout,
+            timeout=(settings.ollama_connect_timeout, settings.ollama_timeout),
         )
         r.raise_for_status()
         return r.json().get("response", "").strip()
@@ -86,8 +117,11 @@ def generate(prompt: str, model: str = None, temperature: float = None) -> str:
                 f"Modelul '{model}' nu este instalat. "
                 f"Rulează: `ollama pull {model}`"
             ) from exc
-        logger.exception("Eroare HTTP Ollama")
-        raise OllamaUnavailableError(f"Ollama a întors HTTP {r.status_code}") from exc
+        detail = _ollama_error_detail(r)
+        logger.error("Eroare HTTP Ollama {}: {}", r.status_code, detail)
+        raise OllamaUnavailableError(
+            _friendly_ollama_error(r.status_code, detail)
+        ) from exc
     except requests.exceptions.Timeout as exc:
         logger.error("Timeout Ollama după {}s", settings.ollama_timeout)
         raise OllamaUnavailableError(
@@ -116,9 +150,21 @@ def stream(prompt: str, model: str = None) -> Generator[str, None, None]:
             settings.ollama_generate_url,
             json=payload,
             stream=True,
-            timeout=settings.ollama_timeout,
+            timeout=(settings.ollama_connect_timeout, settings.ollama_timeout),
         ) as r:
-            r.raise_for_status()
+            # Verificăm statusul explicit cât timp răspunsul e încă deschis, ca să
+            # putem citi corpul erorii (ex: „model requires more system memory").
+            if r.status_code != 200:
+                if r.status_code == 404:
+                    raise ModelNotFoundError(
+                        f"Modelul '{model}' nu este instalat. "
+                        f"Rulează: `ollama pull {model}`"
+                    )
+                detail = _ollama_error_detail(r)
+                logger.error("Eroare HTTP Ollama {}: {}", r.status_code, detail)
+                raise OllamaUnavailableError(
+                    _friendly_ollama_error(r.status_code, detail)
+                )
             for line in r.iter_lines():
                 if not line:
                     continue
@@ -134,12 +180,13 @@ def stream(prompt: str, model: str = None) -> Generator[str, None, None]:
 
     except requests.exceptions.ConnectionError as exc:
         raise OllamaUnavailableError() from exc
-    except requests.exceptions.HTTPError as exc:
-        if r.status_code == 404:
-            raise ModelNotFoundError(f"Modelul '{model}' nu este instalat.") from exc
-        raise OllamaUnavailableError(f"HTTP {r.status_code}") from exc
     except requests.exceptions.Timeout as exc:
-        raise OllamaUnavailableError("Timeout la generarea răspunsului.") from exc
+        raise OllamaUnavailableError(
+            "Modelul a depășit timpul de generare. Pe CPU, modelele 7–8B sunt lente, "
+            "mai ales dacă RAM-ul e insuficient (modelul intră în swap). "
+            "Soluții: folosește un model mai mic (ex. llama3.2:3b), eliberează memorie "
+            "închizând alte aplicații, sau mărește OLLAMA_TIMEOUT în .env."
+        ) from exc
 
 
 # ── Streaming async (pentru FastAPI WebSocket) ────────────────────────────────

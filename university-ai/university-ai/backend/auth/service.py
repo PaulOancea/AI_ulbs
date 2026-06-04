@@ -26,6 +26,7 @@ from backend.auth.database import get_connection
 from backend.config import settings
 from backend.exceptions import AppException
 from backend.logging_config import logger
+from backend.text_utils import normalize
 
 
 # ── Excepții specifice ───────────────────────────────────────────────────────
@@ -201,19 +202,105 @@ def get_chat(chat_id: int) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def list_user_chats(user_id: int, limit: int = 50) -> List[dict]:
-    """Returnează chat-urile unui utilizator, cele mai recente primele."""
+def list_user_chats(
+    user_id: int,
+    limit: int = 50,
+    include_archived: bool = False,
+    search: Optional[str] = None,
+) -> List[dict]:
+    """
+    Returnează chat-urile unui utilizator.
+
+    Ordonare: fixate (pin) întâi, apoi cele mai recente.
+    `include_archived` False → ascunde conversațiile arhivate.
+    `search` → filtrare după titlu, INSENSIBILĂ la diacritice și majuscule.
+    """
+    query = (
+        "SELECT c.*, "
+        "(SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS message_count "
+        "FROM chats c WHERE c.user_id = ?"
+    )
+    params: list = [user_id]
+    if not include_archived:
+        query += " AND c.archived = 0"
+    query += " ORDER BY c.pinned DESC, c.updated_at DESC LIMIT ?"
+    params.append(limit)
+
     with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT c.*,
-                   (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS message_count
-               FROM chats c
-               WHERE c.user_id = ?
-               ORDER BY c.updated_at DESC
-               LIMIT ?""",
-            (user_id, limit),
-        ).fetchall()
-    return [dict(r) for r in rows]
+        rows = conn.execute(query, tuple(params)).fetchall()
+
+    chats = [dict(r) for r in rows]
+
+    if search and search.strip():
+        needle = normalize(search)
+        chats = [c for c in chats if needle in normalize(c.get("title", ""))]
+
+    return chats
+
+
+def set_pinned(chat_id: int, user_id: int, pinned: bool) -> bool:
+    """Fixează / defixează o conversație (doar dacă aparține utilizatorului)."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE chats SET pinned = ? WHERE id = ? AND user_id = ?",
+            (1 if pinned else 0, chat_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def set_archived(chat_id: int, user_id: int, archived: bool) -> bool:
+    """Arhivează / dezarhivează o conversație."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE chats SET archived = ? WHERE id = ? AND user_id = ?",
+            (1 if archived else 0, chat_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+# ── Partajare ────────────────────────────────────────────────────────────────
+
+def enable_sharing(chat_id: int, user_id: int) -> Optional[str]:
+    """
+    Activează partajarea publică (read-only) a unei conversații și returnează
+    token-ul. Dacă există deja un token, îl refolosește.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT share_token FROM chats WHERE id = ? AND user_id = ?",
+            (chat_id, user_id),
+        ).fetchone()
+        if not row:
+            return None
+        token = row["share_token"]
+        if not token:
+            token = uuid.uuid4().hex
+            conn.execute(
+                "UPDATE chats SET share_token = ? WHERE id = ? AND user_id = ?",
+                (token, chat_id, user_id),
+            )
+    return token
+
+
+def disable_sharing(chat_id: int, user_id: int) -> bool:
+    """Oprește partajarea (invalidează link-ul)."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE chats SET share_token = NULL WHERE id = ? AND user_id = ?",
+            (chat_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_shared_chat(token: str) -> Optional[dict]:
+    """Returnează conversația partajată după token (fără verificare de user)."""
+    if not token:
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM chats WHERE share_token = ? LIMIT 1", (token,)
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def rename_chat(chat_id: int, new_title: str, user_id: int) -> bool:
@@ -283,6 +370,30 @@ def add_message(
             (chat_id,),
         )
         return cur.lastrowid
+
+
+def update_message(message_id: int, chat_id: int, new_content: str) -> bool:
+    """Editează conținutul unui mesaj (și îl marchează ca editat)."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE messages SET content = ?, edited = 1 WHERE id = ? AND chat_id = ?",
+            (new_content, message_id, chat_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_messages_from(chat_id: int, message_id: int) -> int:
+    """
+    Șterge mesajul `message_id` și TOATE mesajele ulterioare din conversație.
+    Folosit la editarea unui mesaj: conversația „se ramifică" din acel punct.
+    Returnează numărul de mesaje șterse.
+    """
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM messages WHERE chat_id = ? AND id >= ?",
+            (chat_id, message_id),
+        )
+        return cur.rowcount
 
 
 def get_messages(chat_id: int) -> List[dict]:

@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS chats (
     user_id     INTEGER NOT NULL,
     title       TEXT NOT NULL DEFAULT 'Conversație nouă',
     session_id  TEXT NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0,   -- conversație fixată (pin)
+    archived    INTEGER NOT NULL DEFAULT 0,   -- conversație arhivată
+    share_token TEXT,                          -- token public de partajare (sau NULL)
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -58,6 +61,8 @@ CREATE TABLE IF NOT EXISTS chats (
 
 CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id);
 CREATE INDEX IF NOT EXISTS idx_chats_updated ON chats(updated_at DESC);
+-- Indexul pe share_token se creează în _run_migrations (după ce coloana există,
+-- altfel ar eșua pe bazele de date vechi care încă nu au coloana).
 
 CREATE TABLE IF NOT EXISTS messages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,6 +71,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content     TEXT NOT NULL,
     sources     TEXT,            -- JSON cu sursele (pentru răspunsuri)
     rewritten   TEXT,            -- întrebarea reformulată (dacă există)
+    edited      INTEGER NOT NULL DEFAULT 0,   -- mesaj editat de utilizator
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );
@@ -73,6 +79,27 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 """
+
+
+# Coloane adăugate ulterior — migrate non-distructiv pe baze existente
+# (tabel, coloană, definiție DDL pentru ALTER TABLE ADD COLUMN)
+_MIGRATIONS = [
+    ("chats", "pinned", "INTEGER NOT NULL DEFAULT 0"),
+    ("chats", "archived", "INTEGER NOT NULL DEFAULT 0"),
+    ("chats", "share_token", "TEXT"),
+    ("messages", "edited", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Adaugă coloanele noi pe baze deja existente (idempotent)."""
+    for table, column, ddl in _MIGRATIONS:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            logger.info("Migrare DB: adăugat {}.{}", table, column)
+    # Index pe share_token (poate lipsi pe baze vechi)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chats_share ON chats(share_token)")
 
 
 # ── Inițializare DB ──────────────────────────────────────────────────────────
@@ -92,6 +119,7 @@ def _ensure_initialized() -> None:
         conn = sqlite3.connect(str(db_path))
         try:
             conn.executescript(SCHEMA)
+            _run_migrations(conn)
             conn.commit()
         finally:
             conn.close()

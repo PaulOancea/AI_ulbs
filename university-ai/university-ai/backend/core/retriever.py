@@ -25,6 +25,7 @@ from backend.config import settings
 from backend.core.reranker import Reranker
 from backend.core.vector_store import VectorStore
 from backend.logging_config import logger
+from backend.text_utils import strip_diacritics
 
 
 # ── Tokenizator simplu pentru BM25 (compatibil RO) ────────────────────────────
@@ -47,10 +48,20 @@ RO_STOPWORDS = {
 }
 
 
+# Stopwords normalizate (fără diacritice) pentru comparație consistentă
+_RO_STOPWORDS_NORM = {strip_diacritics(w) for w in RO_STOPWORDS}
+
+
 def tokenize(text: str) -> List[str]:
-    """Tokenizator simplu lowercase, fără stopwords."""
-    tokens = [t.lower() for t in _TOKEN_RE.findall(text)]
-    return [t for t in tokens if t not in RO_STOPWORDS and len(t) > 1]
+    """
+    Tokenizator lowercase, fără diacritice și fără stopwords.
+
+    Eliminarea diacriticelor face căutarea BM25 INSENSIBILĂ LA DIACRITICE:
+    „condiții" și „conditii" produc același token. Deoarece se aplică identic
+    la construirea indexului ȘI la interogare, funcționează fără re-indexare.
+    """
+    tokens = [strip_diacritics(t.lower()) for t in _TOKEN_RE.findall(text)]
+    return [t for t in tokens if t not in _RO_STOPWORDS_NORM and len(t) > 1]
 
 
 # ── BM25 wrapper (in-memory) ──────────────────────────────────────────────────
