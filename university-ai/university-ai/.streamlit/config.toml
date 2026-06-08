@@ -15,3 +15,13 @@ fileWatcherType = "none"
 
 [logger]
 level = "info"
+
+# Temă vizuală premium (dark). Fixează aspectul indiferent de setarea browserului.
+# CSS-ul detaliat din frontend/components/styles.py se bazează pe aceste culori.
+[theme]
+base = "dark"
+primaryColor = "#6366f1"
+backgroundColor = "#0a0e1a"
+secondaryBackgroundColor = "#141a2a"
+textColor = "#e6eaf2"
+font = "sans serif"

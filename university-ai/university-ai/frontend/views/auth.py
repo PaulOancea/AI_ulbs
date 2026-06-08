@@ -57,7 +57,7 @@ def render_login() -> None:
     col_a, col_b, col_c = st.columns([1, 2, 1])
     with col_b:
         _render_header(
-            "🔐 Autentificare",
+            "Autentificare",
             "Conectează-te pentru istoric persistent și acces nelimitat",
         )
 
@@ -121,7 +121,7 @@ def render_register() -> None:
     col_a, col_b, col_c = st.columns([1, 2, 1])
     with col_b:
         _render_header(
-            "✨ Cont nou",
+            "Cont nou",
             "Înregistrare gratuită — toate funcționalitățile activate",
         )
 

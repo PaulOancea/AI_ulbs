@@ -8,6 +8,7 @@ Pagina principală de chat — versiunea cu suport pentru:
   • Upload de PDF/DOCX/imagini (cu OCR automat)
 """
 
+import html
 import uuid
 from typing import Optional
 
@@ -15,7 +16,9 @@ import streamlit as st
 
 from backend.auth import service as auth_service
 from backend.config import settings
-from backend.core import deadlines, disambiguation, form_filler, llm
+from backend.core import (
+    deadlines, disambiguation, exam_service, form_filler, llm, schedule_service,
+)
 from backend.core.ingestion import IngestionService
 from backend.core.memory import memory_manager
 from backend.core.ocr import is_tesseract_available
@@ -107,10 +110,11 @@ def _ensure_chat_exists(user: dict, first_question: str) -> int:
 
 def _render_conversations(user: dict) -> None:
     """Lista conversațiilor utilizatorului + căutare + arhivate + opțiuni."""
-    st.markdown("### 💬 Conversațiile tale")
+    st.markdown("### Conversațiile tale")
 
-    if st.button("➕ Conversație nouă", type="primary",
-                 use_container_width=True, key="sb_new_chat"):
+    if st.button("Conversație nouă", type="primary",
+                 use_container_width=True, key="sb_new_chat",
+                 icon=":material/add:"):
         st.session_state.messages = []
         session.set_active_chat(None)
         st.rerun()
@@ -118,7 +122,7 @@ def _render_conversations(user: dict) -> None:
     # Căutare după titlu (insensibilă la diacritice) + comutator arhivate
     st.session_state.chat_search = st.text_input(
         "Caută", value=st.session_state.get("chat_search", ""),
-        placeholder="🔎 Caută o conversație...",
+        placeholder="Caută o conversație...",
         label_visibility="collapsed", key="sb_search",
     )
     st.session_state.show_archived = st.toggle(
@@ -152,21 +156,25 @@ def _render_chat_row(chat: dict, user: dict, active_id) -> None:
     title = chat["title"]
     msg_count = chat.get("message_count", 0)
 
-    prefix = ("🟢 " if is_active else "") + ("📌 " if pinned else "💬 ")
     col_main, col_pin, col_del = st.columns([5, 1, 1])
     with col_main:
-        label = prefix + (title[:26] + "…" if len(title) > 26 else title)
+        label = title[:28] + "…" if len(title) > 28 else title
         if st.button(label, key=f"chat_btn_{chat['id']}", use_container_width=True,
+                     type="primary" if is_active else "secondary",
+                     icon=":material/push_pin:" if pinned else ":material/chat_bubble:",
                      help=f"{msg_count} mesaje · {chat['updated_at']}"):
             _load_chat_into_session(chat["id"])
             st.rerun()
     with col_pin:
-        if st.button("📍" if pinned else "📌", key=f"pin_{chat['id']}",
+        if st.button("", key=f"pin_{chat['id']}",
+                     type="primary" if pinned else "secondary",
+                     icon=":material/push_pin:",
                      help="Anulează fixarea" if pinned else "Fixează sus"):
             auth_service.set_pinned(chat["id"], user["id"], not pinned)
             st.rerun()
     with col_del:
-        if st.button("🗑", key=f"del_{chat['id']}", help="Șterge conversația"):
+        if st.button("", key=f"del_{chat['id']}", icon=":material/close:",
+                     help="Șterge conversația"):
             auth_service.delete_chat(chat["id"], user["id"])
             if is_active:
                 st.session_state.messages = []
@@ -180,18 +188,19 @@ def _render_chat_options(active_id: int, user: dict) -> None:
     if not chat or chat.get("user_id") != user["id"]:
         return
 
-    with st.expander("⚙️ Opțiuni conversație"):
+    with st.expander("Opțiuni conversație", icon=":material/settings:"):
         # Redenumire
         new_title = st.text_input("Titlu", value=chat["title"], key=f"rename_{active_id}")
-        if st.button("💾 Salvează titlul", key=f"save_title_{active_id}",
-                     use_container_width=True):
+        if st.button("Salvează titlul", key=f"save_title_{active_id}",
+                     use_container_width=True, icon=":material/save:"):
             auth_service.rename_chat(active_id, new_title, user["id"])
             st.rerun()
 
         # Arhivare / dezarhivare
         archived = bool(chat.get("archived"))
-        if st.button("📂 Dezarhivează" if archived else "🗂 Arhivează",
-                     key=f"arch_{active_id}", use_container_width=True):
+        if st.button("Dezarhivează" if archived else "Arhivează",
+                     key=f"arch_{active_id}", use_container_width=True,
+                     icon=":material/unarchive:" if archived else ":material/archive:"):
             auth_service.set_archived(active_id, user["id"], not archived)
             if not archived:  # tocmai am arhivat → o scoatem din vizor
                 st.session_state.messages = []
@@ -201,19 +210,19 @@ def _render_chat_options(active_id: int, user: dict) -> None:
         # Partajare publică (read-only)
         token = chat.get("share_token")
         if token:
-            st.success("🔗 Partajare activă (doar citire)")
+            st.success("Partajare activă (doar citire)")
             st.code(f"?share={token}", language=None)
             st.caption(
                 "Adaugă acest parametru la adresa aplicației și trimite link-ul "
                 "(ex: http://localhost:8501/?share=…)."
             )
-            if st.button("🚫 Oprește partajarea", key=f"unshare_{active_id}",
-                         use_container_width=True):
+            if st.button("Oprește partajarea", key=f"unshare_{active_id}",
+                         use_container_width=True, icon=":material/link_off:"):
                 auth_service.disable_sharing(active_id, user["id"])
                 st.rerun()
         else:
-            if st.button("🔗 Partajează conversația", key=f"share_{active_id}",
-                         use_container_width=True):
+            if st.button("Partajează conversația", key=f"share_{active_id}",
+                         use_container_width=True, icon=":material/share:"):
                 auth_service.enable_sharing(active_id, user["id"])
                 st.rerun()
 
@@ -255,7 +264,7 @@ def _render_sidebar(vs, ingestion):
             st.markdown(
                 f"""
                 <div class="user-chip">
-                    <div class="user-avatar" style="background: #6c757d;">👤</div>
+                    <div class="user-avatar" style="background: #6c757d;">I</div>
                     <div>
                         <div class="user-name">Invitat</div>
                         <div class="user-meta">{remaining} întrebări rămase</div>
@@ -269,18 +278,21 @@ def _render_sidebar(vs, ingestion):
             )
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("🔐 Login", use_container_width=True, key="sb_login"):
+                if st.button("Login", use_container_width=True, key="sb_login",
+                             icon=":material/login:"):
                     session.navigate_to(session.PAGE_LOGIN)
             with c2:
-                if st.button("✨ Cont", use_container_width=True, key="sb_register"):
+                if st.button("Cont", use_container_width=True, key="sb_register",
+                             icon=":material/person_add:"):
                     session.navigate_to(session.PAGE_REGISTER)
 
         # ── Panou administrare (DOAR pentru admini, în spatele unui buton) ────
         if session.is_admin():
             st.divider()
-            label = "🔧 Ascunde panoul admin" if st.session_state.show_admin_panel \
-                else "🔧 Panou administrare"
-            if st.button(label, use_container_width=True, key="sb_admin_toggle"):
+            label = "Ascunde panoul admin" if st.session_state.show_admin_panel \
+                else "Panou administrare"
+            if st.button(label, use_container_width=True, key="sb_admin_toggle",
+                         icon=":material/tune:"):
                 st.session_state.show_admin_panel = not st.session_state.show_admin_panel
                 st.rerun()
 
@@ -295,7 +307,7 @@ def _render_admin_panel(vs, ingestion):
     file_count = len(vs.get_ingested_files())
     models = llm.list_models() if ollama_ok else []
 
-    st.caption("⚙️ Vizibil doar pentru administratori")
+    st.caption("Vizibil doar pentru administratori")
 
     # ── Status sistem ─────────────────────────────────────────────────────────
     st.markdown("**Status sistem**")
@@ -340,7 +352,7 @@ def _render_admin_panel(vs, ingestion):
     st.divider()
 
     # ── Upload documente ──────────────────────────────────────────────────────
-    with st.expander("📂 Adaugă documente", expanded=True):
+    with st.expander("Adaugă documente", expanded=True, icon=":material/upload_file:"):
         allowed_types = ["pdf", "docx", "txt"]
         if ocr_ok:
             allowed_types += ["png", "jpg", "jpeg", "tiff", "bmp"]
@@ -381,7 +393,7 @@ def _render_admin_panel(vs, ingestion):
             st.rerun()
 
     # ── Setări avansate ─────────────────────────────────────────────────────
-    with st.expander("⚙️ Setări avansate"):
+    with st.expander("Setări avansate", icon=":material/settings:"):
         st.session_state.show_chunks = st.toggle(
             "Afișează fragmentele",
             value=st.session_state.show_chunks,
@@ -399,7 +411,8 @@ def _render_admin_panel(vs, ingestion):
 def _render_chunks(chunks: list):
     if not chunks:
         return
-    with st.expander(f"🔍 {len(chunks)} fragmente folosite ca sursă"):
+    with st.expander(f"{len(chunks)} fragmente folosite ca sursă",
+                     icon=":material/search:"):
         for i, ch in enumerate(chunks, 1):
             score_pct = int(ch.get("score", 0) * 100)
             chips = f'<span class="score-chip">dense: {score_pct}%</span>'
@@ -456,6 +469,66 @@ def _apply_edit(index: int, new_text: str, user, chat_id) -> None:
     st.rerun()
 
 
+# Lățimile (proporțiile) coloanelor: Data, Ora, Disciplină, Sală, Profesor, Tip.
+_EXAM_COL_WEIGHTS = [1.7, 1.5, 3.6, 1.0, 2.8, 1.2]
+_EXAM_BTN_WEIGHT = 1.7   # coloana butonului „Adaugă în Calendar"
+
+
+def _exam_cell(value, cls: str = "exam-td") -> str:
+    """O celulă a tabelului de examene (HTML escapat, „—" pentru gol)."""
+    txt = "—" if value in (None, "") else html.escape(str(value))
+    return f"<span class='{cls}'>{txt}</span>"
+
+
+def _render_exam_table(table: dict, msg_index: int) -> None:
+    """Randează examenele ca tabel cu butonul „Adaugă în Calendar" PE FIECARE rând.
+
+    Înlocuiește vechea listă de butoane înșiruite sub tabel: fiecare examen are
+    butonul lui, aliniat în ultima coloană, vertical-centrat lângă rândul lui.
+    """
+    cols = table.get("cols") or []
+    rows = table.get("rows") or []
+    has_btn = any(r.get("url") for r in rows)
+
+    if table.get("header"):
+        st.markdown(table["header"])
+
+    spec = list(_EXAM_COL_WEIGHTS[:len(cols)])
+    labels = list(cols)
+    if has_btn:
+        spec.append(_EXAM_BTN_WEIGHT)
+        labels.append("Calendar")
+
+    with st.container(border=True):
+        # Antet
+        head_cols = st.columns(spec, vertical_alignment="center")
+        for c, name in zip(head_cols, labels):
+            c.markdown(_exam_cell(name, "exam-th"), unsafe_allow_html=True)
+        st.markdown("<hr class='exam-rule'>", unsafe_allow_html=True)
+
+        # Rânduri (cu separator subtil între ele)
+        for ri, r in enumerate(rows):
+            row_cols = st.columns(spec, vertical_alignment="center")
+            for c, val in zip(row_cols, r.get("cells", [])):
+                c.markdown(_exam_cell(val), unsafe_allow_html=True)
+            if has_btn:
+                if r.get("url"):
+                    row_cols[-1].link_button(
+                        "Adaugă", r["url"], icon=":material/calendar_add_on:",
+                        use_container_width=True,
+                    )
+                else:
+                    row_cols[-1].markdown(
+                        _exam_cell("fără oră", "exam-td muted"),
+                        unsafe_allow_html=True,
+                    )
+            if ri < len(rows) - 1:
+                st.markdown("<hr class='exam-rule'>", unsafe_allow_html=True)
+
+    if table.get("notes"):
+        st.caption(table["notes"])
+
+
 def _render_message_history(user) -> None:
     """Afișează istoricul mesajelor curente, cu posibilitatea de editare."""
     chat_id = st.session_state.get("active_chat_id")
@@ -471,57 +544,74 @@ def _render_message_history(user) -> None:
                 )
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("💾 Trimite", key=f"edit_save_{i}",
-                                 type="primary", use_container_width=True):
+                    if st.button("Trimite", key=f"edit_save_{i}",
+                                 type="primary", use_container_width=True,
+                                 icon=":material/send:"):
                         _apply_edit(i, new_text, user, chat_id)
                 with c2:
-                    if st.button("✖ Anulează", key=f"edit_cancel_{i}",
-                                 use_container_width=True):
+                    if st.button("Anulează", key=f"edit_cancel_{i}",
+                                 use_container_width=True, icon=":material/close:"):
                         st.session_state.editing_index = None
                         st.rerun()
                 continue
 
             # ── Afișare normală ──────────────────────────────────────────────
-            st.markdown(msg["content"])
+            # Tabelul de examene are randare bogată (buton Calendar pe fiecare
+            # rând); restul mesajelor rămân Markdown simplu (tabele incluse).
+            if msg.get("exam_table"):
+                _render_exam_table(msg["exam_table"], i)
+            else:
+                st.markdown(msg["content"])
 
             if msg["role"] == "user":
                 if msg.get("edited"):
-                    st.caption("✏️ editat")
-                if st.button("✏️", key=f"edit_btn_{i}", help="Editează mesajul"):
+                    st.caption("editat")
+                if st.button("", key=f"edit_btn_{i}", icon=":material/edit:",
+                             help="Editează mesajul"):
                     st.session_state.editing_index = i
                     st.rerun()
 
             if msg["role"] == "assistant":
                 if msg.get("rewritten") and st.session_state.show_rewritten:
-                    st.caption(f'🔄 Reformulat: *„{msg["rewritten"]}"*')
+                    st.caption(f'Reformulat: *„{msg["rewritten"]}"*')
 
                 # Buton de descărcare pentru cererea completată (.docx)
                 if msg.get("docx"):
                     st.download_button(
-                        "⬇️ Descarcă cererea (.docx)",
+                        "Descarcă cererea (.docx)",
                         data=msg["docx"],
                         file_name=msg.get("docx_name", "cerere.docx"),
                         mime=("application/vnd.openxmlformats-officedocument."
                               "wordprocessingml.document"),
                         key=f"dl_docx_{i}",
                         type="primary",
+                        icon=":material/download:",
                     )
 
                 # Buton „Adaugă în Google Calendar" (doar pentru termene viitoare)
                 if msg.get("calendar_url"):
                     st.link_button(
-                        "📅 Adaugă în Google Calendar",
+                        "Adaugă în Google Calendar",
                         msg["calendar_url"],
+                        icon=":material/calendar_add_on:",
                     )
+
+                # Link-uri Google Calendar pentru examene (câte unul per examen).
+                # Sărim peste ele când avem tabelul bogat (butoanele sunt deja
+                # pe fiecare rând) — altfel le afișăm ca listă (ex. fallback DB).
+                if not msg.get("exam_table"):
+                    for _link in msg.get("calendar_links") or []:
+                        st.link_button(_link["label"], _link["url"],
+                                       icon=":material/calendar_add_on:")
 
 
                 if msg.get("sources"):
                     badges = " ".join(
-                        f'<span class="source-badge">📄 {s}</span>'
+                        f'<span class="source-badge">{s}</span>'
                         for s in msg["sources"]
                     )
                     st.markdown(
-                        f'<div style="margin-top:8px;"><strong>📚 Surse:</strong><br/>{badges}</div>',
+                        f'<div style="margin-top:8px;"><strong>Surse:</strong><br/>{badges}</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -531,7 +621,8 @@ def _render_message_history(user) -> None:
 
 def _render_attach_widget(ingestion) -> None:
     """Permite utilizatorului să atașeze un document folosit ca sursă în conversație."""
-    with st.expander("📎 Atașează un document (răspund pe baza lui)"):
+    with st.expander("Atașează un document (răspund pe baza lui)",
+                     icon=":material/attach_file:"):
         ocr_ok = is_tesseract_available()
         allowed = ["pdf", "docx", "txt"]
         if ocr_ok:
@@ -561,9 +652,9 @@ def _render_attach_widget(ingestion) -> None:
                 existing.add(uf.name)
 
         if st.session_state.attached_names:
-            st.caption("📎 Atașat: " + ", ".join(st.session_state.attached_names))
-            if st.button("🗑 Elimină atașamentele", key="clear_attach",
-                         use_container_width=True):
+            st.caption("Atașat: " + ", ".join(st.session_state.attached_names))
+            if st.button("Elimină atașamentele", key="clear_attach",
+                         use_container_width=True, icon=":material/close:"):
                 session.clear_attachments()
                 # Schimbăm cheia uploader-ului ca să se golească widget-ul
                 st.session_state.attach_uploader_version += 1
@@ -584,11 +675,11 @@ def _render_welcome():
             st.markdown(
                 """
                 <div class="intro-box">
-                <h4>👋 Bun venit (admin)!</h4>
+                <h4>Bun venit (admin)!</h4>
                 <p>Nu există încă documente indexate. Pentru a începe:</p>
                 <ol>
                 <li>Pornește <code>ollama serve</code> dacă nu rulează</li>
-                <li>Deschide <strong>🔧 Panou administrare</strong> → „Adaugă documente"</li>
+                <li>Deschide <strong>Panou administrare</strong> → „Adaugă documente"</li>
                 <li>Pune prima întrebare!</li>
                 </ol>
                 </div>
@@ -599,9 +690,9 @@ def _render_welcome():
             st.markdown(
                 """
                 <div class="intro-box">
-                <h4>👋 Bun venit la ClaudiuAI!</h4>
-                <p>Poți <strong>atașa un document</strong> (mai jos, „📎 Atașează un
-                document") și să-mi pui întrebări despre conținutul lui.</p>
+                <h4>Bun venit la ClaudiuAI!</h4>
+                <p>Poți <strong>atașa un document</strong> (mai jos) și să-mi pui
+                întrebări despre conținutul lui.</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -613,7 +704,7 @@ def _render_welcome():
         sub = "Cu ce te pot ajuta astăzi?"
     else:
         remaining = session.guest_questions_remaining()
-        greeting = "👋 <strong>Salut!</strong>"
+        greeting = "<strong>Salut!</strong>"
         sub = (
             f"Ești în modul invitat — mai ai <strong>{remaining} întrebări</strong>. "
             "Creează un cont pentru acces nelimitat și istoric."
@@ -624,14 +715,8 @@ def _render_welcome():
         <div class="intro-box">
         <h4>{greeting}</h4>
         <p>{sub}</p>
-        <p><strong>Întreabă-mă de exemplu:</strong></p>
-        <ul>
-        <li><em>„Care sunt condițiile de promovare?"</em></li>
-        <li><em>„Cum se calculează media de licență?"</em></li>
-        <li><em>„Care e procedura de contestare a unei note?"</em></li>
-        </ul>
-        <p>💡 Poți și <strong>atașa un document</strong> (mai jos) ca să-mi pui
-        întrebări despre el.</p>
+        <p>Poți și <strong>atașa un document</strong> (mai jos) ca să-mi pui
+        întrebări despre conținutul lui.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -654,13 +739,18 @@ def _persist_user_msg(question: str, user) -> Optional[int]:
 
 
 def _append_assistant(content: str, user, chat_id, sources=None,
-                      docx: Optional[bytes] = None, docx_name: Optional[str] = None) -> None:
-    """Adaugă un mesaj de asistent în sesiune (+ DB). docx-ul rămâne doar în sesiune."""
+                      docx: Optional[bytes] = None, docx_name: Optional[str] = None,
+                      calendar_links=None, exam_table=None) -> None:
+    """Adaugă un mesaj de asistent în sesiune (+ DB). docx-ul/link-urile rămân doar în sesiune."""
     msg = {"role": "assistant", "content": content, "sources": sources or [],
            "chunks": [], "rewritten": None}
     if docx is not None:
         msg["docx"] = docx
         msg["docx_name"] = docx_name
+    if calendar_links:
+        msg["calendar_links"] = calendar_links
+    if exam_table:
+        msg["exam_table"] = exam_table
     st.session_state.messages.append(msg)
     if user and chat_id:
         aid = auth_service.add_message(
@@ -696,7 +786,6 @@ def _run_form_step(question: str, user, vs, pending) -> None:
     if pending:
         source = pending["source"]
         template_text = pending.get("text") or form_filler.get_full_document_text(vs, source)
-        blank_contexts = pending.get("blanks") or form_filler.extract_blank_contexts(template_text)
     else:
         # Potrivire ROBUSTĂ: folosim TOATE mesajele utilizatorului (inclusiv cererea
         # inițială), ca să regăsim același șablon chiar dacă starea s-a pierdut.
@@ -731,10 +820,6 @@ def _run_form_step(question: str, user, vs, pending) -> None:
             _append_assistant(content, user, chat_id)
             st.rerun()
             return
-        blank_contexts = form_filler.extract_blank_contexts(template_text)
-        st.session_state.pending_form = {
-            "source": source, "text": template_text, "blanks": blank_contexts,
-        }
 
     if not template_text:
         st.session_state.pending_form = None
@@ -744,9 +829,10 @@ def _run_form_step(question: str, user, vs, pending) -> None:
         st.rerun()
         return
 
-    # Câmpurile necesare (nume prietenoase, deterministe din șablon)
-    field_names = form_filler.extract_field_names(template_text)
-    if not field_names:
+    # Sloturile (locurile goale), POZIȚIONALE — păstrează câmpurile duplicate
+    # (ex. 2× specializare, 3× anul de studii) ca să le putem cere/completa pe TOATE.
+    slots = form_filler.extract_slots(template_text)
+    if not slots:
         # fallback puțin probabil — niciun loc gol detectat
         st.session_state.pending_form = None
         _append_assistant(
@@ -756,50 +842,39 @@ def _run_form_step(question: str, user, vs, pending) -> None:
         st.rerun()
         return
 
-    # Datele oferite = mesajele utilizatorului din această conversație
-    user_msgs = [m["content"] for m in st.session_state.messages if m["role"] == "user"]
-    user_data = "\n".join(user_msgs[-15:])
+    slot_values = dict((pending or {}).get("slot_values") or {})
+    already_asked = bool(pending and pending.get("asked"))
 
-    # Pasul 1 (COD): extragem valorile explicite (fiabil, fără LLM)
-    values = form_filler.extract_values_code(field_names, user_data)
+    # 1) Dacă am cerut deja lista, interpretăm răspunsul NUMEROTAT / în ordine.
+    if already_asked:
+        slot_values = form_filler.parse_slot_reply(question, slots, slot_values)
 
-    # Pasul 2 (LLM, doar dacă mai lipsește ceva): completăm restul din text liber
-    still_missing = form_filler.missing_fields(field_names, values)
-    if still_missing:
-        try:
-            with st.spinner("Verific datele..."):
-                resp = llm.generate(
-                    form_filler.build_extract_prompt(still_missing, user_data),
-                    model=st.session_state.selected_model,
-                )
-            llm_values = form_filler.parse_extraction(resp, still_missing)
-            for k, v in llm_values.items():
-                if v and not values.get(k):
-                    values[k] = v
-        except AppException as exc:
-            _append_assistant(f"⚠️ {exc.message}", user, chat_id)
-            st.rerun()
-            return
-        except Exception:
-            logger.exception("Eroare la extragerea datelor cererii")
-            # continuăm cu ce a prins codul
+    # 2) Dacă tot mai lipsesc câmpuri, încercăm să le DEDUCEM din text liber
+    #    (nume, program, telefon… via cod + LLM). Util la primul pas ȘI când
+    #    utilizatorul răspunde în limbaj natural, nu cu numere. Sărim peste LLM
+    #    dacă răspunsul numerotat a completat deja tot.
+    if form_filler.missing_slots(slots, slot_values):
+        named = _form_named_values(slots, user)
+        if named is None:
+            return   # eroare LLM deja raportată
+        slot_values = form_filler.merge_named_into_slots(slots, slot_values, named)
 
-    # Pasul 3 (COD): decizie deterministă complet / lipsă
-    missing = form_filler.missing_fields(field_names, values)
+    missing = form_filler.missing_slots(slots, slot_values)
 
     if missing:
-        lst = "\n".join(f"- {m}" for m in missing)
-        content = (
-            "📝 Pentru a completa cererea, mai am nevoie de:\n\n" + lst +
-            "\n\nTe rog trimite-mi aceste informații."
-        )
-        _append_assistant(content, user, chat_id, sources=[source])
+        st.session_state.pending_form = {
+            "source": source, "text": template_text,
+            "slot_values": slot_values, "asked": True,
+        }
+        _append_assistant(_render_slot_request(slots, slot_values, missing),
+                          user, chat_id, sources=[source])
     else:
-        # Pasul 3 (COD): completare deterministă + generare document
-        docx_bytes, docx_name, layout_kept = form_filler.generate_filled_document(
-            source, template_text, values,
+        docx_bytes, docx_name, layout_kept = form_filler.generate_filled_document_slots(
+            source, template_text, slot_values,
         )
-        recap = "\n".join(f"- {f}: {values.get(form_filler.normalize(f))}" for f in field_names)
+        recap = "\n".join(
+            f"- {s.index}. {s.friendly}: {slot_values.get(s.index)}" for s in slots
+        )
         nota = (
             "" if layout_kept else
             "\n\n_Notă: șablonul original e PDF, așa că documentul păstrează textul "
@@ -807,7 +882,8 @@ def _run_form_step(question: str, user, vs, pending) -> None:
             "cererea în format .docx._"
         )
         content = (
-            "✅ Am completat cererea pe baza datelor oferite. O poți descărca mai jos.\n\n"
+            "✅ Am completat cererea cu toate cele "
+            f"**{len(slots)} câmpuri**. O poți descărca mai jos.\n\n"
             "**Date folosite:**\n" + recap + nota
         )
         st.session_state.pending_form = None
@@ -815,6 +891,153 @@ def _run_form_step(question: str, user, vs, pending) -> None:
                           docx=docx_bytes, docx_name=docx_name)
 
     st.rerun()
+
+
+def _form_named_values(slots, user):
+    """Pre-completare comodă la primul pas: extrage valori pe NUME (cod + LLM) din
+    mesajele utilizatorului. Returnează {nume_normalizat: valoare} sau None la
+    eroare LLM (caz în care mesajul a fost deja afișat)."""
+    field_names = list({s.friendly for s in slots})
+    user_msgs = [m["content"] for m in st.session_state.messages if m["role"] == "user"]
+    user_data = "\n".join(user_msgs[-15:])
+
+    values = form_filler.extract_values_code(field_names, user_data)
+    still = form_filler.missing_fields(field_names, values)
+    if still:
+        try:
+            with st.spinner("Verific datele..."):
+                resp = llm.generate(
+                    form_filler.build_extract_prompt(still, user_data),
+                    model=st.session_state.selected_model,
+                )
+            for k, v in form_filler.parse_extraction(resp, still).items():
+                if v and not values.get(k):
+                    values[k] = v
+        except AppException as exc:
+            chat_id = st.session_state.get("active_chat_id")
+            _append_assistant(f"⚠️ {exc.message}", user, chat_id)
+            st.rerun()
+            return None
+        except Exception:
+            logger.exception("Eroare la extragerea datelor cererii")
+            # continuăm cu ce a prins codul
+    return values
+
+
+def _render_slot_request(slots, slot_values, missing) -> str:
+    """Lista NUMEROTATĂ a câmpurilor (bifate ✅ cele completate, ⬜ cele lipsă, cu
+    context pentru a deosebi duplicatele) + instrucțiuni de răspuns."""
+    lines = []
+    for s in slots:
+        val = (slot_values.get(s.index) or "").strip()
+        if val:
+            lines.append(f"**{s.index}.** ✅ {s.friendly}: {val}")
+        else:
+            lines.append(f"**{s.index}.** ⬜ {s.friendly} — _{s.context}_")
+    n = len(missing)
+    pre = "Am completat ce mi-ai spus deja. " if any(
+        (v or "").strip() for v in slot_values.values()) else ""
+    return (
+        f"📝 Cererea are **{len(slots)} câmpuri**. {pre}"
+        f"Mai am nevoie de **{n}** {'câmp' if n == 1 else 'câmpuri'} "
+        "(cele marcate cu ⬜):\n\n"
+        + "\n".join(lines)
+        + "\n\nTrimite-mi valorile lipsă **cu numărul lor** "
+          "(ex: `3=2, 9=Informatică`) sau pur și simplu pe rând, "
+          "câte una pe linie, în ordinea de mai sus."
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  EXAMENE — răspuns din ExamService + link Google Calendar per examen
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _maybe_handle_exam(question: str, user) -> bool:
+    """True dacă mesajul ține de examene (și a fost tratat aici).
+
+    Răspunde din ExamService (nu din RAG). Dacă examenele nu sunt sincronizate,
+    lăsăm fluxul normal (feature dormant → nu schimbă nimic).
+    """
+    if not exam_service.is_exam_question(question):
+        return False
+    svc = exam_service.ExamService()
+    if not svc.is_loaded():
+        return False  # examene nesincronizate → fluxul RAG normal
+
+    chat_id = _persist_user_msg(question, user)
+    result = svc.answer(question)
+    _append_assistant(result["text"], user, chat_id,
+                      calendar_links=result.get("calendar_links"),
+                      exam_table=result.get("table"))
+    st.rerun()
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ORAR — întreabă o dată grupa/semigrupa, apoi o reține în conversație
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _maybe_handle_schedule(question: str, user) -> bool:
+    """
+    True dacă mesajul ține de orar (și a fost tratat aici).
+
+    Comportament: dacă utilizatorul NU specifică grupa și nu avem una reținută,
+    îl întrebăm din ce grupă/semigrupă este și reținem întrebarea inițială. La
+    următorul mesaj (răspunsul cu grupa) reluăm întrebarea inițială și memorăm
+    grupa pentru tot restul conversației. Nu atinge RAG-ul: dacă orarul nu e
+    sincronizat, lăsăm fluxul normal.
+    """
+    pending = st.session_state.get("pending_schedule")
+    if not pending and not schedule_service.is_schedule_question(question):
+        return False
+
+    svc = schedule_service.ScheduleService()
+    if not svc.is_loaded():
+        return False  # orar nesincronizat → fluxul RAG normal (ca înainte)
+
+    remembered = st.session_state.get("schedule_formation")
+
+    # ── Așteptam răspunsul cu grupa la o întrebare anterioară ─────────────────
+    if pending:
+        reply_res = svc.resolve(question, ask_if_unspecified=True)
+
+        # Utilizatorul a dat o grupă validă → reluăm întrebarea inițială
+        if reply_res.status == "ok":
+            chat_id = _persist_user_msg(question, user)
+            st.session_state.schedule_formation = reply_res.formation_id
+            st.session_state.pending_schedule = None
+            original = pending.get("question", question)
+            _append_assistant(svc.answer_with(reply_res.formation_id, original),
+                              user, chat_id, sources=[])
+            st.rerun()
+            return True
+
+        # Nu e o grupă, dar pare o încercare (ex. „31") sau altă întrebare de orar
+        if schedule_service.mentions_group(question) or schedule_service.is_schedule_question(question):
+            chat_id = _persist_user_msg(question, user)
+            if reply_res.status == "unknown":   # grupă recunoscută dar nesincronizată
+                st.session_state.pending_schedule = None
+            _append_assistant(reply_res.message, user, chat_id)
+            st.rerun()
+            return True
+
+        # Utilizatorul a schimbat subiectul → renunțăm la așteptare, lăsăm RAG-ul
+        st.session_state.pending_schedule = None
+        return False
+
+    # ── Întrebare normală despre orar ─────────────────────────────────────────
+    res = svc.resolve(question, remembered=remembered, ask_if_unspecified=True)
+    chat_id = _persist_user_msg(question, user)
+    if res.status == "clarify" and res.needs_group:
+        st.session_state.pending_schedule = {"question": question}   # reținem întrebarea
+        _append_assistant(res.message, user, chat_id)
+    elif res.status in ("clarify", "unknown"):
+        _append_assistant(res.message, user, chat_id)
+    else:
+        st.session_state.schedule_formation = res.formation_id
+        _append_assistant(svc.answer_for(res, question), user, chat_id, sources=[])
+    st.rerun()
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -856,8 +1079,19 @@ def _process_question(chain, question: str, user) -> None:
         st.markdown(question)
 
     with st.chat_message("assistant"):
+        # Butonul „Oprește" stă SUS, deasupra textului în curs, pe toată lățimea →
+        # imposibil de ratat cât timp se generează răspunsul. Un click trimite un
+        # rerun, iar Streamlit întrerupe bucla la următorul `placeholder.markdown`
+        # (yield point), ridicând RerunException. Textul parțial e reținut în
+        # `gen_partial` și salvat la rerun de `_flush_stopped_generation`.
+        stop_slot = st.empty()
         placeholder = st.empty()
         thinking = "Analizez documentul atașat" if attached else "Analizez documentele"
+        stop_slot.button(
+            "Oprește generarea", key="stop_generation",
+            icon=":material/stop_circle:", use_container_width=True,
+            help="Oprește răspunsul în curs",
+        )
         placeholder.markdown(
             f'<span class="thinking">{thinking}</span>', unsafe_allow_html=True,
         )
@@ -873,11 +1107,14 @@ def _process_question(chain, question: str, user) -> None:
 
             rewritten_q = metadata.get("rewritten_query")
             if rewritten_q and st.session_state.show_rewritten:
-                st.caption(f'🔄 Reformulat: *„{rewritten_q}"*')
+                st.caption(f'Reformulat: *„{rewritten_q}"*')
 
+            # Reținem progresul ca să-l putem salva dacă utilizatorul oprește.
+            st.session_state.gen_partial = {"chat_id": chat_id, "text": ""}
             full_text = ""
             for token in token_stream:
                 full_text += token
+                st.session_state.gen_partial["text"] = full_text
                 # Protecție anti-buclă: oprește dacă modelul repetă la nesfârșit
                 if looks_repetitive(full_text):
                     try:
@@ -888,6 +1125,8 @@ def _process_question(chain, question: str, user) -> None:
                     break
                 placeholder.markdown(full_text + "▌")
             placeholder.markdown(full_text)
+            stop_slot.empty()                      # generare gata → ascundem butonul
+            st.session_state.gen_partial = None     # nu mai e nimic de salvat
 
             chain.commit_to_memory(session_id, question, full_text)
 
@@ -896,10 +1135,10 @@ def _process_question(chain, question: str, user) -> None:
             sources = [] if no_answer else metadata["sources"]
             if sources:
                 badges = " ".join(
-                    f'<span class="source-badge">📄 {s}</span>' for s in sources
+                    f'<span class="source-badge">{s}</span>' for s in sources
                 )
                 st.markdown(
-                    f'<div style="margin-top:12px;"><strong>📚 Surse:</strong><br/>{badges}</div>',
+                    f'<div style="margin-top:12px;"><strong>Surse:</strong><br/>{badges}</div>',
                     unsafe_allow_html=True,
                 )
 
@@ -931,7 +1170,8 @@ def _process_question(chain, question: str, user) -> None:
                         f"Sursa: {sources[0] if sources else 'document'}."
                     )
                     calendar_url = deadlines.build_gcal_url(title, dl.date_obj, details)
-                    st.link_button("📅 Adaugă în Google Calendar", calendar_url)
+                    st.link_button("Adaugă în Google Calendar", calendar_url,
+                                   icon=":material/calendar_add_on:")
 
             msg = {
                 "role": "assistant",
@@ -954,6 +1194,8 @@ def _process_question(chain, question: str, user) -> None:
                 session.increment_guest_counter()
 
         except AppException as exc:
+            stop_slot.empty()
+            st.session_state.gen_partial = None
             placeholder.error(f"⚠️ {exc.message}")
             logger.warning("Chat AppException: {}", exc.message)
             st.session_state.messages.append({
@@ -961,6 +1203,8 @@ def _process_question(chain, question: str, user) -> None:
                 "sources": [], "chunks": [],
             })
         except Exception as exc:
+            stop_slot.empty()
+            st.session_state.gen_partial = None
             placeholder.error("❌ Eroare neașteptată. Verifică log-urile.")
             logger.exception("Chat exception: {}", exc)
             st.session_state.messages.append({
@@ -974,12 +1218,41 @@ def _process_question(chain, question: str, user) -> None:
 #  PUNCT DE INTRARE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _flush_stopped_generation(user) -> None:
+    """Salvează răspunsul parțial dacă generarea a fost oprită din buton.
+
+    Când utilizatorul apasă „Oprește generarea", click-ul declanșează un rerun
+    care întrerupe bucla de streaming (RerunException). Aici, la începutul rulării
+    următoare, recuperăm textul parțial reținut în `gen_partial` și îl persistăm
+    ca răspuns (marcat „generare oprită"). Pe rulările normale e un no-op.
+    """
+    g = st.session_state.pop("gen_partial", None)
+    if not g:
+        return
+    text = (g.get("text") or "").strip()
+    if not text:
+        return   # oprit înainte de orice conținut → nu adăugăm o bulă goală
+    text += "\n\n_⏹ Generare oprită._"
+    msg = {"role": "assistant", "content": text, "sources": [],
+           "chunks": [], "rewritten": None, "stopped": True}
+    st.session_state.messages.append(msg)
+    chat_id = g.get("chat_id")
+    if user and chat_id:
+        aid = auth_service.add_message(
+            chat_id, role="assistant", content=text, sources=[],
+        )
+        st.session_state.messages[-1]["id"] = aid
+
+
 def render() -> None:
     """Punctul de intrare apelat de router."""
     vs, chain, ingestion = _get_resources()
     _render_sidebar(vs, ingestion)
 
     user = session.get_current_user()
+
+    # Dacă răspunsul precedent a fost oprit din buton, salvăm ce s-a generat.
+    _flush_stopped_generation(user)
 
     # ── Navbar + header ─────────────────────────────────────────────────────
     render_navbar(active=session.PAGE_CHAT)
@@ -991,11 +1264,13 @@ def render() -> None:
         bc1, bc2 = st.columns([4, 1])
         with bc1:
             st.info(
-                f"📝 Completez cererea: **{pending_form['source']}**. "
-                "Oferă-mi datele cerute, mesaj cu mesaj."
+                f"Completez cererea: **{pending_form['source']}**. "
+                "Oferă-mi datele cerute, mesaj cu mesaj.",
+                icon=":material/edit_document:",
             )
         with bc2:
-            if st.button("✖ Renunță", key="cancel_form", use_container_width=True):
+            if st.button("Renunță", key="cancel_form", use_container_width=True,
+                         icon=":material/close:"):
                 st.session_state.pending_form = None
                 st.rerun()
 
@@ -1006,14 +1281,15 @@ def render() -> None:
             st.markdown(
                 f"""
                 <div class="guest-warning">
-                ⚠️ <strong>Mod invitat:</strong> {remaining} întrebare rămasă.
+                <strong>Mod invitat:</strong> {remaining} întrebare rămasă.
                 <a href="#" onclick="return false;">Creează un cont</a>
                 pentru acces nelimitat și istoric persistent.
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("✨ Creează cont acum", type="primary", key="warn_register"):
+            if st.button("Creează cont acum", type="primary", key="warn_register",
+                         icon=":material/person_add:"):
                 session.navigate_to(session.PAGE_REGISTER)
 
     # ── Welcome sau istoric ──────────────────────────────────────────────────
@@ -1028,7 +1304,7 @@ def render() -> None:
     # ── Input utilizator ─────────────────────────────────────────────────────
     chat_disabled = session.guest_limit_reached()
     placeholder_text = (
-        "🚫 Limita de întrebări guest atinsă — creează un cont pentru a continua."
+        "Limita de întrebări guest atinsă — creează un cont pentru a continua."
         if chat_disabled
         else "Scrie întrebarea ta..."
     )
@@ -1042,8 +1318,9 @@ def render() -> None:
     if chat_disabled:
         col_a, col_b, col_c = st.columns([1, 1, 1])
         with col_b:
-            if st.button("✨ Creează cont gratuit", type="primary",
-                         use_container_width=True, key="limit_register"):
+            if st.button("Creează cont gratuit", type="primary",
+                         use_container_width=True, key="limit_register",
+                         icon=":material/person_add:"):
                 session.navigate_to(session.PAGE_REGISTER)
 
     # Întrebarea poate veni din input SAU din editarea unui mesaj (pending)
@@ -1054,6 +1331,14 @@ def render() -> None:
 
     # ─── Completare cerere/formular (prioritar față de RAG) ──────────────────
     if _maybe_handle_form(question, user, vs):
+        return
+
+    # ─── Examene (modul separat; răspuns din ExamService + link Calendar) ────
+    if _maybe_handle_exam(question, user):
+        return
+
+    # ─── Orar (modul separat; întreabă grupa o dată, apoi o reține) ──────────
+    if _maybe_handle_schedule(question, user):
         return
 
     # ─── Procesare întrebare normală (RAG) ───────────────────────────────────

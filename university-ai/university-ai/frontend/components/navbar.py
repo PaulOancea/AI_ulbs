@@ -56,20 +56,20 @@ def render_navbar(active: str = "") -> None:
     with right:
         if user:
             items = [
-                ("🏠 Acasă", session.PAGE_HOME),
-                ("💬 Chat", session.PAGE_CHAT),
-                ("🚪 Logout", "__logout__"),
+                ("Acasă", session.PAGE_HOME, ":material/home:"),
+                ("Chat", session.PAGE_CHAT, ":material/chat_bubble:"),
+                ("Logout", "__logout__", ":material/logout:"),
             ]
         else:
             items = [
-                ("🏠 Acasă", session.PAGE_HOME),
-                ("💬 Chat", session.PAGE_CHAT),
-                ("🔐 Login", session.PAGE_LOGIN),
-                ("✨ Cont nou", session.PAGE_REGISTER),
+                ("Acasă", session.PAGE_HOME, ":material/home:"),
+                ("Chat", session.PAGE_CHAT, ":material/chat_bubble:"),
+                ("Login", session.PAGE_LOGIN, ":material/login:"),
+                ("Cont nou", session.PAGE_REGISTER, ":material/person_add:"),
             ]
 
         cols = st.columns(len(items))
-        for col, (label, target) in zip(cols, items):
+        for col, (label, target, icon) in zip(cols, items):
             with col:
                 is_active = target == active
                 if st.button(
@@ -77,6 +77,7 @@ def render_navbar(active: str = "") -> None:
                     key=f"nav_{target}",
                     use_container_width=True,
                     type="primary" if is_active else "secondary",
+                    icon=icon,
                 ):
                     if target == "__logout__":
                         session.logout_user()

@@ -147,6 +147,67 @@ def test_fields_detected_with_whitespace_blanks_docx_style():
     assert "Telefon : 0712345678" in filled
 
 
+def test_detects_generic_fields_new_template():
+    """Șablon nou (echivalare) cu locuri goale = spații înainte de virgulă:
+    trebuie detectate TOATE câmpurile, nu doar cele predefinite."""
+    tpl = ("Domnule Decan, Subsemnatul(a) la Facultatea de Medicină, specializarea , "
+           "an universitar\t, echivalarea examenului la disciplina , examen promovat la "
+           "Universitatea , Facultatea , cu nota\t.")
+    fields = set(ff.extract_field_names(tpl))
+    assert "programul de studii" in fields       # specializarea
+    assert "anul universitar" in fields
+    assert "disciplina" in fields
+    assert "universitatea (de proveniență)" in fields
+    assert "facultatea" in fields
+    assert "nota" in fields
+
+
+def test_rejects_junk_fields_free_text_request():
+    """Cerere liberă tip PDF: zonele de text liber / semnătură / aprobare NU
+    devin câmpuri (altfel formularul cere la nesfârșit date imposibile)."""
+    tpl = (
+        "Aprobat/Respins\nDomnule Decan\n"
+        "Subsemnatul (a), ………, student la Facultatea de Drept, specializarea ......, "
+        "anul ...... de studii, an universitar ......, vă rog să-mi aprobați ......\n"
+        "Solicit acesta deoarece ......\nMenționez că ......\n"
+        "Confirmare secretară specializare/semnătura ......\nMentiuni : ......\n"
+        "Sibiu, Semnătură student\nData ......"
+    )
+    fields = ff.extract_field_names(tpl)
+    # Câmpurile reale rămân
+    assert "numele și prenumele" in fields
+    assert "programul de studii" in fields
+    assert "anul de studiu" in fields
+    assert "anul universitar" in fields
+    # Gunoiul dispare
+    joined = " ".join(ff.normalize(f) for f in fields)
+    for junk in ("deoarece", "mentionez", "mentiuni", "tiuni", "semnatur",
+                 "aprobat", "respins", "confirmare", "informatia ceruta"):
+        assert junk not in joined, f"câmp-gunoi detectat: {junk}"
+
+
+def test_name_asked_and_inserted_without_slot():
+    """Cerere cu „Subsemnatul(a) student(a)" fără slot → numele e cerut și inserat."""
+    tpl = "Subsemnatul(a) student(a) la Facultatea de X, specializarea , cu nota\t."
+    assert "numele și prenumele" in ff.extract_field_names(tpl)
+    vals = {ff.normalize("numele și prenumele"): "Ion Popescu"}
+    out = ff.fill_template(tpl, vals)
+    assert "student(a) Ion Popescu la Facultatea" in out
+
+
+def test_fill_generic_fields():
+    tpl = "disciplina , examen promovat la Universitatea , cu nota\t."
+    vals = {
+        ff.normalize("disciplina"): "Anatomie",
+        ff.normalize("universitatea (de proveniență)"): "UMF Cluj",
+        ff.normalize("nota"): "9",
+    }
+    out = ff.fill_template(tpl, vals)
+    assert "disciplina Anatomie" in out
+    assert "Universitatea UMF Cluj" in out
+    assert "nota 9" in out
+
+
 def test_code_extraction_explicit_input():
     """Extragerea în cod ia valorile din formulări explicite, fără LLM."""
     fields = ["numele și prenumele", "programul de studii", "anul de studiu",
@@ -213,3 +274,118 @@ def test_parse_and_generate():
     assert status == "complete" and "Ion Popescu" in body
     docx = ff.generate_docx(body)
     assert docx[:2] == b"PK"   # .docx e arhivă zip
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SLOT-URI POZIȚIONALE — câmpuri DUPLICATE (cazul „echivalare examen")
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Șablon de echivalare ca cel din captura utilizatorului: „specializarea" ×2,
+# „anul de studii" ×3, „an universitar" ×2, plus „Facultatea de" (proveniență).
+_ECHIV = (
+    "Domnule Decan,\n"
+    "Subsemnatul(a) student(a)  la Facultatea de Medicina, specializarea , "
+    "anul de studii , an universitar , va rog sa imi aprobati echivalarea "
+    "examenului la disciplina , anul de studii , examen promovat la Universitatea , "
+    "Facultatea de , specializarea  in anul de studii , an universitar , cu nota .\n"
+    "Data,  Semnatura student,"
+)
+
+
+def test_extract_slots_preserves_duplicates():
+    """Câmpurile repetate NU se contopesc — fiecare apariție = un slot separat."""
+    slots = ff.extract_slots(_ECHIV)
+    friendly = [s.friendly for s in slots]
+    # 12 sloturi, în ordine, cu duplicate păstrate
+    assert friendly == [
+        "numele și prenumele",
+        "programul de studii",            # specializarea TA
+        "anul de studiu",                  # an de studii curent
+        "anul universitar",
+        "disciplina",
+        "anul de studiu",                  # anul examenului promovat
+        "universitatea (de proveniență)",
+        "facultatea",                      # Facultatea de proveniență
+        "programul de studii",            # specializarea de proveniență
+        "anul de studiu",
+        "anul universitar",
+        "nota",
+    ]
+    # indecșii sunt 1-based și unici
+    assert [s.index for s in slots] == list(range(1, 13))
+
+
+def test_slot_year_not_misclassified_as_program():
+    """Regresie: locul gol de după „anul de studii" NU mai devine „programul de studii"."""
+    slots = ff.extract_slots(_ECHIV)
+    years = [s.index for s in slots if s.friendly == "anul de studiu"]
+    assert len(years) == 3        # toate cele 3 „anul de studii" sunt câmpuri de an
+
+
+def test_facultatea_de_provenienta_detected_not_hardcoded():
+    """„Facultatea de ___" (proveniență) e slot; „Facultatea de Medicina" (deja scris) NU."""
+    slots = ff.extract_slots(_ECHIV)
+    fac = [s for s in slots if s.friendly == "facultatea"]
+    assert len(fac) == 1                       # doar cea de proveniență
+    assert "Medicina" not in fac[0].context    # nu e cea hardcodată
+
+
+def test_parse_slot_reply_numbered_and_fill():
+    """Răspuns NUMEROTAT → fiecare câmp (inclusiv duplicatele) primește valoarea lui."""
+    slots = ff.extract_slots(_ECHIV)
+    reply = ("1=Cretu Crina, 2=Calculatoare, 3=3, 4=2025-2026, 5=Baze de Date, "
+             "6=2, 7=ULBS, 8=Inginerie, 9=Informatica, 10=2, 11=2024-2025, 12=10")
+    vals = ff.parse_slot_reply(reply, slots)
+    assert ff.missing_slots(slots, vals) == []
+    out = ff.fill_slots(_ECHIV, vals)
+    # duplicatele completate cu valori DISTINCTE, nu cu aceeași
+    assert "specializarea Calculatoare," in out
+    assert "specializarea Informatica in anul de studii" in out
+    assert "Facultatea de Inginerie," in out
+    assert "Universitatea ULBS," in out
+    assert "cu nota 10." in out                       # punctul final păstrat
+    assert "anul de studii Calculatoare" not in out   # vechea eroare a dispărut
+
+
+def test_parse_slot_reply_ordered_lines():
+    """Răspuns în ORDINE (câte o valoare pe linie) pentru sloturile lipsă."""
+    slots = ff.extract_slots("Subsemnatul/a ______, programul de studii ______, în anul______.")
+    # 3 sloturi: nume, program, an
+    assert len(slots) == 3
+    vals = ff.parse_slot_reply("Ana Pop\nDrept\n2", slots)
+    assert ff.missing_slots(slots, vals) == []
+    out = ff.fill_slots("Subsemnatul/a ______, programul de studii ______, în anul______.", vals)
+    assert "Ana Pop" in out and "Drept" in out
+
+
+def test_merge_named_fills_first_empty_duplicate():
+    """Pre-completarea pe nume umple PRIMUL slot liber cu acel nume; duplicatul rămâne."""
+    slots = ff.extract_slots(_ECHIV)
+    named = {ff.normalize("programul de studii"): "Calculatoare"}
+    vals = ff.merge_named_into_slots(slots, {}, named)
+    # doar prima „specializare" (index 2) e pre-completată; a doua (index 9) rămâne
+    assert vals.get(2) == "Calculatoare"
+    assert 9 not in vals
+
+
+def test_slots_skip_signature_and_junk():
+    """Semnătura/aprobarea/textul liber NU devin sloturi (doar câmpurile reale)."""
+    tpl = (
+        "Aprobat/Respins\nDomnule Decan\n"
+        "Subsemnatul(a) , specializarea , va rog sa-mi aprobati ceva.\n"
+        "Semnatura student\nData ______\nAprobat Director ______"
+    )
+    slots = ff.extract_slots(tpl)
+    # exact 2 câmpuri reale: numele și specializarea; restul (semnătură/aprobare/
+    # data) NU produc sloturi
+    assert [s.friendly for s in slots] == ["numele și prenumele", "programul de studii"]
+
+
+def test_fill_slots_name_inserted_after_student():
+    tpl = "Subsemnatul(a) student(a)  la Facultatea de X, cu nota ."
+    slots = ff.extract_slots(tpl)
+    name_idx = next(s.index for s in slots if s.friendly == "numele și prenumele")
+    nota_idx = next(s.index for s in slots if s.friendly == "nota")
+    out = ff.fill_slots(tpl, {name_idx: "Ion Popescu", nota_idx: "9"})
+    assert "student(a) Ion Popescu la Facultatea" in out
+    assert "cu nota 9." in out

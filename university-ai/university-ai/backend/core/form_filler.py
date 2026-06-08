@@ -15,9 +15,10 @@ sistemul stochează doar textul documentelor, nu fișierele binare.
 """
 
 import re
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from docx import Document
 
@@ -214,8 +215,17 @@ def friendly_name(text: str) -> str:
         return "numele și prenumele"
     if "specializ" in n or "program" in n:
         return "programul de studii"
-    if "an de studiu" in n or "anul de studiu" in n or "anul" in n:
+    if "universitar" in n:                # „an universitar"
+        return "anul universitar"
+    if "universitat" in n:                # „Universitatea …" (instituția)
+        return "universitatea (de proveniență)"
+    if "disciplin" in n:
+        return "disciplina"
+    if "an de studiu" in n or "anul de studiu" in n or "anul de studii" in n \
+            or "an de studii" in n or "anul" in n:
         return "anul de studiu"
+    if "studi" in n:                      # „studii"/„studiu" (programul de studii)
+        return "programul de studii"
     if "telefon" in n:
         return "numărul de telefon"
     if "cnp" in n:
@@ -232,6 +242,8 @@ def friendly_name(text: str) -> str:
         return "seria și numărul actului de identitate"
     if "motiv" in n:
         return "motivul cererii"
+    if ("nota" in n or "note" in n) and "promovare" not in n and "notare" not in n:
+        return "nota"
     if n.strip() == "data" or n.endswith(" data"):
         return "data"
     words = [w for w in re.findall(r"[\wăâîșțĂÂÎȘȚ/]+", text) if w != "___"]
@@ -244,7 +256,7 @@ def friendly_name(text: str) -> str:
 _FIELD_SPECS = [
     ("numele și prenumele", r"subsemnat\w*(?:/-?a)?"),
     ("programul de studii", r"program(?:ul)?\s+de\s+studii|specializare(?:a)?"),
-    ("anul de studiu", r"[îi]n\s+anul|anul\s+de\s+studiu"),
+    ("anul de studiu", r"[îi]n\s+anul|an(?:ul)?\s+de\s+studi\w*"),
     ("numărul de telefon", r"telefon(?:ul)?"),
     ("CNP", r"cod\s+numeric\s+personal|\bc\.?n\.?p\.?\b"),
     ("adresa de email", r"adresa\s+de\s+e-?mail|e-?mail(?:ul)?"),
@@ -258,20 +270,86 @@ _SLOT = r"[ 	 _.…:]*"
 _SLOT_END = r"(?=[,;.\n]|$)"
 
 
+# Loc gol GENERIC într-un .docx: o etichetă (ultimul cuvânt) urmată de un spațiu/
+# tab/newline chiar înainte de un delimitator (virgulă/punct) sau capăt de rând.
+# Ex: „specializarea ,", „cu nota⇥.", „Universitatea ,", „disciplina⏎⏎,".
+_GENERIC_BLANK = re.compile(
+    r"([A-Za-zĂÂÎȘȚăâîșț()./\-]{3,})([ \t\xa0\n]+)(?=[,;.]|$)",
+    re.UNICODE,
+)
+
+# Cuvinte care NU sunt câmpuri (verbe/conjuncții frecvente înaintea unui blank)
+_NOT_A_FIELD = {
+    "rog", "aprobati", "aprobă", "imi", "îmi", "sa", "să", "vă", "va", "si", "și",
+    "cu", "la", "de", "in", "în", "pe", "pentru", "domnule", "doamna", "decan",
+    "rector", "director", "semnatura", "semnătura", "data", "titular",
+}
+
+# Markeri care indică un nume de câmp FALS, provenit din zone de text liber,
+# semnături, aprobări sau secțiuni administrative ale unei cereri. Aceste
+# „câmpuri" nu pot fi completate de student (ex: „Solicit acesta deoarece ...",
+# „Menționez că ...", „Mențiuni :", „Confirmare secretară/semnătura",
+# „Semnătură student / Data"). Le respingem ca să NU cerem la nesfârșit date
+# imposibile — formularul trebuie să se poată finaliza din câmpurile reale.
+_JUNK_FIELD_MARKERS = (
+    "semnatur", "aprobat", "respins", "mentiuni", "mentionez", "ionez",
+    "tiuni", "confirmare", "secretar", "deoarece", "solicit", "viza",
+    "rezervat", "se completeaza de", "informatia ceruta",
+)
+
+
+def _is_real_field(name: str) -> bool:
+    """False dacă numele de câmp e gunoi (text liber/semnătură/aprobare/etc.)."""
+    n = normalize(name)
+    if not n:
+        return False
+    if any(m in n for m in _JUNK_FIELD_MARKERS):
+        return False
+    # Respinge fragmentele formate exclusiv din verbe/conjuncții (nu un câmp real)
+    if all(w in _NOT_A_FIELD for w in n.split()):
+        return False
+    return True
+
+
 def extract_field_names(template_text: str) -> List[str]:
     """
-    Lista câmpurilor de completat — detectate după eticheta din șablon urmată
-    de un loc gol. Robust pentru PDF (underscore-uri) și .docx (spații/tab-uri).
+    Lista câmpurilor de completat. Combină:
+      • câmpurile cunoscute (nume frumoase) din _FIELD_SPECS;
+      • detectarea GENERICĂ a locurilor goale (orice etichetă urmată de un spațiu
+        gol înainte de virgulă/punct) — ca să găsească și câmpuri din șabloane noi
+        (disciplină, notă, universitate etc.), nu doar pe cele predefinite.
     """
     names: List[str] = []
     seen = set()
+
+    def _add(name: str):
+        key = normalize(name)
+        if key and key not in seen and _is_real_field(name):
+            seen.add(key)
+            names.append(name)
+
+    # 0) Orice cerere care începe cu „Subsemnatul…" are nevoie de numele petentului,
+    #    chiar dacă nu există un loc gol explicit lângă el.
+    if re.search(r"(?i)subsemnat", template_text):
+        _add("numele și prenumele")
+
+    # 1) Câmpuri cunoscute (nume prietenoase)
     for name, pat in _FIELD_SPECS:
         rx = re.compile(rf"(?i)(?:{pat}){_SLOT}{_SLOT_END}", re.UNICODE)
         if rx.search(template_text):
-            key = normalize(name)
-            if key not in seen:
-                seen.add(key)
-                names.append(name)
+            _add(name)
+
+    # 2) Locuri goale generice (etichetă + spațiu gol înainte de delimitator)
+    for m in _GENERIC_BLANK.finditer(template_text):
+        label = m.group(1)
+        if normalize(label) in _NOT_A_FIELD:
+            continue
+        _add(friendly_name(label))
+
+    # 3) Locuri goale cu underscore/puncte (PDF)
+    for ctx in extract_blank_contexts(template_text):
+        _add(friendly_name(ctx))
+
     return names
 
 
@@ -283,6 +361,8 @@ def _field_type(name: str) -> Optional[str]:
         return "name"
     if "program" in n or "specializ" in n:
         return "program"
+    if "universitar" in n:        # „anul universitar" (interval, ex 2024-2025) → LLM
+        return None
     if "anul" in n or "an de studiu" in n:
         return "year"
     if "telefon" in n:
@@ -419,10 +499,344 @@ def fill_template(template_text: str, values: dict) -> str:
 
         filled = rx.sub(_repl, filled, count=1)
 
+    # Completare GENERICĂ a locurilor goale rămase (câmpuri din șabloane noi:
+    # disciplină, notă, universitate etc.) — inserăm valoarea după etichetă.
+    def _repl_generic(m):
+        label, gap = m.group(1), m.group(2)
+        if normalize(label) in _NOT_A_FIELD:
+            return m.group(0)
+        val = values.get(normalize(friendly_name(label)))
+        # păstrăm gap-ul (inclusiv newline-urile) ca structura paragrafelor să rămână
+        return f"{label} {val}{gap}" if val else m.group(0)
+
+    filled = _GENERIC_BLANK.sub(_repl_generic, filled)
+
+    # Numele petentului din „Subsemnatul(a) student(a) ___" (când nu există slot)
+    name_val = values.get(normalize("numele și prenumele"))
+    if name_val:
+        filled = re.sub(
+            r"(?i)(subsemnat\w*(?:\([aăAĂ]\))?\s+student\w*(?:\([aăAĂ]\))?)(\s+)(?=[a-zăâîșț])",
+            lambda m: f"{m.group(1)} {name_val}{m.group(2)}", filled, count=1,
+        )
+
     # Curățare cosmetică: spații multiple → unul; fără spațiu înainte de virgulă/punct
     filled = re.sub(r"[ \t]{2,}", " ", filled)
     filled = re.sub(r"[ \t]+([,.;])", r"\1", filled)
     return filled
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SLOT-URI POZIȚIONALE — completare numerotată, păstrând câmpurile DUPLICATE
+# ══════════════════════════════════════════════════════════════════════════════
+# Spre deosebire de `extract_field_names` (care DEDUPLICĂ pe nume), aici păstrăm
+# FIECARE apariție a unui câmp ca slot separat, în ordinea din document. Astfel o
+# cerere de echivalare cu „specializarea" de două ori (a ta + cea de proveniență)
+# sau „anul de studii" de mai multe ori produce câte un slot pentru fiecare → le
+# cerem pe TOATE (numerotat) și le completăm POZIȚIONAL, nu o singură dată.
+
+@dataclass
+class Slot:
+    """Un loc gol din șablon (o apariție; duplicatele NU se contopesc)."""
+    index: int          # 1-based, pentru afișare/numerotare
+    friendly: str       # nume prietenos (poate fi non-unic între sloturi)
+    context: str        # frază scurtă cu „⟦__⟧" pe poziția slotului (dezambiguizare)
+    is_name: bool = False
+
+
+# Etichete de câmp (ordonate). Fiecare APARIȚIE urmată de un slot gol = un Slot.
+# Sunt mai permisive decât _FIELD_SPECS: prind și câmpuri repetate / „Facultatea de".
+_LABEL_FRIENDLY: List[Tuple[str, str]] = [
+    ("programul de studii", r"specializare\w*|program(?:ul)?\s+de\s+studii"),
+    # „anul de studii" SAU forma scurtă „în anul ___" (fără „de studii"); NU „an universitar"
+    ("anul de studiu",      r"[îi]n\s+anul(?:\s+de\s+studi\w*)?|an(?:ul)?\s+de\s+studi\w*"),
+    ("anul universitar",    r"an(?:ul)?\s+universitar"),
+    ("disciplina",          r"disciplin\w*"),
+    ("universitatea (de proveniență)", r"universita(?:te\w*|tii)"),
+    ("facultatea",          r"facultat\w*(?:\s+de)?"),
+    ("nota",                r"\bnota\b"),
+    ("numărul de telefon",  r"telefon\w*"),
+    ("CNP",                 r"cod\s+numeric\s+personal|\bc\.?n\.?p\.?\b"),
+    ("adresa de email",     r"adresa\s+de\s+e-?mail|e-?mail\w*"),
+    ("grupa",               r"\bgrupa\b"),
+    ("adresa de domiciliu", r"domicili\w*"),
+    ("seria și numărul actului de identitate", r"seria\s+(?:și|si)\s+(?:nr|num[ăa]rul)"),
+]
+
+_LABEL_RE = re.compile(
+    "(?i)(?:"
+    + "|".join(f"(?P<g{i}>{pat})" for i, (_, pat) in enumerate(_LABEL_FRIENDLY))
+    + ")",
+    re.UNICODE,
+)
+
+# Consumă un loc gol: spații/tab/nbsp/„:" ȘI runuri de marcaje („____", „....", „…").
+# NU consumăm un punct SINGUR (e sfârșit de propoziție, nu loc gol) — doar 4+ puncte.
+_SLOT_CONSUME = re.compile(r"(?:[ \t\xa0:]+|_{2,}|\.{4,}|…+)*")
+_SLOT_MARKER_RE = re.compile(r"_{2,}|\.{4,}|…+")
+
+
+def _label_friendly_for(match: "re.Match") -> Optional[str]:
+    """Numele prietenos al grupului care a făcut potrivirea în _LABEL_RE."""
+    for name, val in match.groupdict().items():
+        if val is not None and name.startswith("g"):
+            return _LABEL_FRIENDLY[int(name[1:])][0]
+    return None
+
+
+def _slot_is_empty(text: str, j: int) -> bool:
+    """True dacă, după spațiile/markerii consumați (poziția j), urmează un
+    delimitator, capăt de rând sau ÎNCEPUTUL altei etichete → slotul e necompletat
+    (în șablonul gol). Așa deosebim „specializarea ⟦gol⟧ în anul…" (urmează altă
+    etichetă) de „Facultatea de Medicină" (urmează un cuvânt obișnuit = deja scris)."""
+    if j >= len(text):
+        return True
+    if text[j] in ",;.\n":
+        return True
+    return bool(_LABEL_RE.match(text, j))
+
+
+def _context_phrase(text: str, start: int, slot_end: int) -> str:
+    """Frază scurtă cu „⟦__⟧" pe poziția slotului — ajută la dezambiguizarea
+    câmpurilor duplicate la afișare (ex: „…specializarea ⟦__⟧ în anul de studii…")."""
+    pre = " ".join(text[max(0, start - 55):slot_end].replace("\n", " ").split()[-6:])
+    post = " ".join(text[slot_end:slot_end + 45].replace("\n", " ").split()[:3])
+    pre = _BLANK_RE.sub(" ", pre).strip()
+    out = f"…{pre} ⟦__⟧"
+    if post:
+        out += f" {_BLANK_RE.sub(' ', post).strip()}…"
+    return " ".join(out.split())
+
+
+def _scan_slots(template_text: str) -> List[dict]:
+    """Scanare DETERMINISTĂ a locurilor goale (cu poziții), păstrând ordinea și
+    duplicatele. Folosită identic de `extract_slots` (afișare) și `fill_slots`
+    (completare) → ordinea/numerotarea coincid mereu."""
+    raw: List[dict] = []
+
+    # 1) Numele petentului („Subsemnatul…") — slot special, fără etichetă-slot clasică.
+    mname = re.search(r"(?i)subsemnat\w*", template_text)
+    if mname:
+        raw.append({
+            "pos": mname.start(), "friendly": "numele și prenumele",
+            "context": _context_phrase(template_text, mname.start(), mname.end()),
+            "is_name": True, "slot_start": mname.start(), "slot_end": mname.end(),
+        })
+
+    # 2) Sloturi pe etichete (fiecare apariție cu loc gol).
+    for m in _LABEL_RE.finditer(template_text):
+        friendly = _label_friendly_for(m)
+        if not friendly:
+            continue
+        j = _SLOT_CONSUME.match(template_text, m.end()).end()
+        gap = template_text[m.end():j]
+        has_marker = bool(_SLOT_MARKER_RE.search(gap))
+        if not (has_marker or _slot_is_empty(template_text, j)):
+            continue   # eticheta e urmată de text real (câmp deja scris în șablon)
+        around = template_text[max(0, m.start() - 30):j]
+        if _is_skip_context(around) or not _is_real_field(friendly):
+            continue
+        raw.append({
+            "pos": m.start(), "friendly": friendly,
+            "context": _context_phrase(template_text, m.start(), j),
+            "is_name": False, "slot_start": m.end(), "slot_end": j,
+        })
+
+    # 3) Ordonăm după poziție și eliminăm potriviri suprapuse (păstrând prima).
+    raw.sort(key=lambda d: d["pos"])
+    out, last_end = [], -1
+    for d in raw:
+        if d["pos"] < last_end:
+            continue
+        out.append(d)
+        last_end = max(d["slot_end"], d["pos"])
+    return out
+
+
+def extract_slots(template_text: str) -> List[Slot]:
+    """Lista locurilor goale ca sloturi numerotate (1-based), în ordinea din
+    document, PĂSTRÂND duplicatele. Pentru completarea numerotată/pozițională."""
+    return [
+        Slot(index=i, friendly=d["friendly"], context=d["context"],
+             is_name=d["is_name"])
+        for i, d in enumerate(_scan_slots(template_text), 1)
+    ]
+
+
+def missing_slots(slots: List[Slot], values: Dict[int, str]) -> List[Slot]:
+    """Sloturile fără valoare (cheie = index 1-based)."""
+    return [s for s in slots if not (values.get(s.index) or "").strip()]
+
+
+def merge_named_into_slots(slots: List[Slot], values: Dict[int, str],
+                           named: Dict[str, str]) -> Dict[int, str]:
+    """Pre-completează comod: pune fiecare valoare extrasă pe nume (ex. din regex/
+    LLM) în PRIMUL slot liber cu același nume prietenos. Pentru câmpuri duplicate,
+    doar prima apariție e pre-completată; restul rămân de cerut (numerotat) — ca să
+    nu punem aceeași valoare în toate duplicatele."""
+    # numele prietenoase care au deja o valoare (nu le re-atingem)
+    used = {normalize(s.friendly) for s in slots if (values.get(s.index) or "").strip()}
+    for s in slots:
+        key = normalize(s.friendly)
+        if (values.get(s.index) or "").strip() or key in used:
+            continue
+        val = named.get(key)
+        if val:
+            values[s.index] = val
+            used.add(key)   # restul duplicatelor cu același nume rămân de cerut
+    return values
+
+
+# Separatori „N=…" / „N:…" → spargem și pe virgulă când urmează „cifră="
+_NUMBERED_SPLIT = re.compile(r"[,;]\s*(?=\d{1,2}\s*[=:).\-])")
+_NUMBERED_LINE = re.compile(r"^\s*(\d{1,2})\s*[=:).\-]\s*(.+)$")
+
+
+def parse_slot_reply(reply: str, slots: List[Slot],
+                     existing: Optional[Dict[int, str]] = None) -> Dict[int, str]:
+    """
+    Mapează răspunsul utilizatorului la indici de slot. Acceptă:
+      • numerotat: „3=2", „3: Informatică", „7) 10", „3. X" (mai multe pe linie,
+        separate cu virgulă/punct-virgulă/linie nouă);
+      • în ordine: câte o valoare pe linie, atribuite sloturilor încă goale.
+    Returnează {index: valoare} (cumulând peste `existing`).
+    """
+    values: Dict[int, str] = dict(existing or {})
+    text = _NUMBERED_SPLIT.sub("\n", reply or "")
+
+    found_numbered = False
+    for line in text.splitlines():
+        m = _NUMBERED_LINE.match(line)
+        if m:
+            idx = int(m.group(1))
+            val = m.group(2).strip(" .,-_")
+            if 1 <= idx <= len(slots) and val:
+                values[idx] = val
+                found_numbered = True
+    if found_numbered:
+        return values
+
+    # Fallback: valori în ORDINE, pentru sloturile rămase goale.
+    missing = [s.index for s in slots if not (values.get(s.index) or "").strip()]
+    # întâi pe linii (câte o valoare pe linie); reținem doar liniile „scurte"
+    # (valori, nu propoziții/întrebări) ca să nu confundăm alt mesaj cu un răspuns.
+    lines = [l.strip(" .,-_") for l in (reply or "").splitlines() if l.strip()]
+    lines = [l for l in lines if len(l.split()) <= 10]
+    if len(lines) >= 2 and len(lines) <= len(missing):
+        for idx, val in zip(missing, lines):
+            values[idx] = val
+        return values
+    # apoi o singură linie cu valori separate prin virgulă, dacă numărul se potrivește
+    if len(lines) == 1:
+        parts = [p.strip(" .,-_") for p in lines[0].split(",") if p.strip()]
+        if len(parts) >= 2 and len(parts) <= len(missing):
+            for idx, val in zip(missing, parts):
+                values[idx] = val
+            return values
+        # un singur câmp lipsă + un singur răspuns scurt → îl punem acolo
+        if len(missing) == 1 and len(parts) == 1:
+            values[missing[0]] = parts[0]
+    return values
+
+
+def _insert_name(text: str, name: str) -> str:
+    """Inserează numele în cererile cu „Subsemnatul…", indiferent de forma slotului."""
+    # a) slot cu underscore/puncte imediat după „Subsemnatul/a"
+    rx1 = re.compile(r"(?i)(subsemnat\w*(?:\s*/\s*-?a|\([aă]\))?)(\s*[_.…]{2,}\s*)")
+    if rx1.search(text):
+        return rx1.sub(lambda m: f"{m.group(1)} {name} ", text, count=1)
+    # b) după „student(a)" (fără slot vizibil)
+    rx2 = re.compile(
+        r"(?i)(subsemnat\w*(?:\([aă]\))?\s+student\w*(?:\([aă]\))?)(\s+)(?=[a-zăâîșțA-ZĂÂÎȘȚ])"
+    )
+    if rx2.search(text):
+        return rx2.sub(lambda m: f"{m.group(1)} {name}{m.group(2)}", text, count=1)
+    # c) imediat după „Subsemnatul(a)"
+    rx3 = re.compile(r"(?i)(subsemnat\w*(?:\([aă]\))?)(\s+)(?=[a-zăâîșț])")
+    return rx3.sub(lambda m: f"{m.group(1)} {name}{m.group(2)}", text, count=1)
+
+
+def fill_slots(template_text: str, values: Dict[int, str]) -> str:
+    """Completează șablonul POZIȚIONAL: fiecare slot (după index 1-based) primește
+    valoarea lui. Câmpurile duplicate sunt completate independent (nu cu aceeași
+    valoare). Numele se inserează prin `_insert_name`."""
+    scanned = _scan_slots(template_text)
+    result = template_text
+    # Dreapta → stânga, ca pozițiile celorlalte sloturi să rămână valide.
+    for i in range(len(scanned) - 1, -1, -1):
+        s = scanned[i]
+        if s["is_name"]:
+            continue
+        val = (values.get(i + 1) or "").strip()
+        if not val:
+            continue
+        # Spațiu și înainte, și după valoare; curățarea cosmetică de la final
+        # colapsează spațiile duble și scoate spațiul dinaintea unui delimitator.
+        result = result[:s["slot_start"]] + " " + val + " " + result[s["slot_end"]:]
+
+    # Numele (după ce restul e completat; pozițiile name sunt la început).
+    name_idx = next((i + 1 for i, s in enumerate(scanned) if s["is_name"]), None)
+    if name_idx and (values.get(name_idx) or "").strip():
+        result = _insert_name(result, values[name_idx].strip())
+
+    # Curățare cosmetică: spații multiple → unul; fără spațiu înainte de delimitator.
+    result = re.sub(r"[ \t]{2,}", " ", result)
+    result = re.sub(r"[ \t]+([,;.])", r"\1", result)
+    return result
+
+
+def fill_docx_in_place_slots(docx_bytes: bytes, values: Dict[int, str]) -> bytes:
+    """Ca `fill_docx_in_place`, dar pe baza sloturilor poziționale (păstrând
+    layout-ul). Completăm pe textul ÎMBINAT al paragrafelor (sloturile pot trece
+    dintr-un paragraf în altul) și redistribuim pe paragrafe după newline-uri."""
+    doc = Document(BytesIO(docx_bytes))
+
+    def _set_text(p, new_text):
+        if new_text == p.text:
+            return
+        if p.runs:
+            p.runs[0].text = new_text
+            for r in p.runs[1:]:
+                r.text = ""
+        else:
+            p.add_run(new_text)
+
+    paras = list(doc.paragraphs)
+    joined = "\n".join(p.text for p in paras)
+    filled = fill_slots(joined, values)
+    segments = filled.split("\n")
+    if len(segments) == len(paras):
+        for p, seg in zip(paras, segments):
+            _set_text(p, seg)
+    else:
+        # structura nu se mai potrivește → completăm tot în primul paragraf gol-sigur
+        for p in paras:
+            _set_text(p, fill_slots(p.text, values))
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    _set_text(p, fill_slots(p.text, values))
+
+    out = BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def generate_filled_document_slots(source: str, template_text: str,
+                                   values: Dict[int, str]) -> Tuple[bytes, str, bool]:
+    """Ca `generate_filled_document`, dar pe baza sloturilor poziționale.
+    Returnează (bytes, nume_fișier, layout_păstrat)."""
+    try:
+        original = settings.originals_folder_abs / Path(source).name
+        if original.suffix.lower() == ".docx" and original.exists():
+            filled = fill_docx_in_place_slots(original.read_bytes(), values)
+            return filled, docx_filename(source), True
+    except Exception:
+        logger.exception("Completarea în loc a .docx (sloturi) a eșuat; fallback text")
+
+    filled_text = fill_slots(template_text, values)
+    return generate_docx(filled_text), docx_filename(source), False
 
 
 # ── Prompt LLM (vechi — păstrat pentru compatibilitate) ───────────────────────
@@ -516,8 +930,7 @@ def fill_docx_in_place(docx_bytes: bytes, values: dict) -> bytes:
     """
     doc = Document(BytesIO(docx_bytes))
 
-    def _fill_paragraph(p):
-        new_text = fill_template(p.text, values)
+    def _set_text(p, new_text):
         if new_text == p.text:
             return
         if p.runs:
@@ -527,13 +940,28 @@ def fill_docx_in_place(docx_bytes: bytes, values: dict) -> bytes:
         else:
             p.add_run(new_text)
 
-    for p in doc.paragraphs:
-        _fill_paragraph(p)
+    # Corpul documentului: completăm pe textul ÎMBINAT al paragrafelor, ca să
+    # prindem locurile goale care trec dintr-un paragraf în altul (ex: „disciplina"
+    # la final de paragraf, virgula în paragraful următor). fill_template păstrează
+    # newline-urile, deci numărul de paragrafe rămâne neschimbat.
+    paras = list(doc.paragraphs)
+    joined = "\n".join(p.text for p in paras)
+    filled_joined = fill_template(joined, values)
+    segments = filled_joined.split("\n")
+    if len(segments) == len(paras):
+        for p, seg in zip(paras, segments):
+            _set_text(p, seg)
+    else:
+        # siguranță: dacă structura nu se mai potrivește, completăm paragraf-cu-paragraf
+        for p in paras:
+            _set_text(p, fill_template(p.text, values))
+
+    # Tabele: completăm pe celule
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
-                    _fill_paragraph(p)
+                    _set_text(p, fill_template(p.text, values))
 
     out = BytesIO()
     doc.save(out)

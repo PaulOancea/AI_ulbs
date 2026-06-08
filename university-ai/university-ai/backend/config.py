@@ -88,6 +88,31 @@ class Settings(BaseSettings):
     # cu păstrarea layout-ului)
     originals_folder: str = "./data/originals"
 
+    # ── Orar (modul separat, independent de RAG) ─────────────────────────────
+    schedule_base_url: str = "https://schedule.ulbsibiu.ro/api"
+    schedule_faculty: str = "ing"
+    schedule_planning_time_unit_id: int = 5
+    # CSV cu toate formațiile (grupe/semigrupe) de sincronizat
+    schedule_formation_ids: str = "541,542,543,544,545,546,557,558,564,565"
+    default_schedule_formation_id: str = "541"
+    # Grupa/semigrupa implicită folosită când utilizatorul NU o specifică
+    default_schedule_group: str = "C_31"
+    default_schedule_subgroup: str = "1"
+    schedule_data_path: str = "./data/schedule/schedule.json"
+    # Maparea grupă/semigrupă → studyFormationId (fișier JSON editabil)
+    schedule_formation_map_path: str = "./data/schedule/formation_map.json"
+
+    # ── Examene (modul separat; ULBS Connect; independent de RAG) ────────────
+    exams_api_url: str = "https://connect.ulbsibiu.ro/api/schedule/faculties/ing/exams"
+    exams_faculty: str = "ing"
+    exams_planning_time_unit_id: int = 5
+    exams_start_date: str = "2026-03-02"
+    exams_end_date: str = "2026-09-30"
+    exams_per_page: int = 300
+    # Grupele pentru care descărcăm examenele (apel separat per grupă)
+    exams_study_formations: str = "C_31,C_32,TI_31,ISM_31"
+    exams_data_path: str = "./data/schedule/exams.json"
+
     # ── OCR (PDF-uri scanate + imagini) ──────────────────────────────────────
     ocr_enabled: bool = True
     ocr_languages: str = "ron+eng"     # Tesseract: ex. "ron+eng+fra"
@@ -151,6 +176,28 @@ class Settings(BaseSettings):
         return Path(self.originals_folder).resolve()
 
     @property
+    def schedule_data_path_abs(self) -> Path:
+        return Path(self.schedule_data_path).resolve()
+
+    @property
+    def schedule_formation_map_path_abs(self) -> Path:
+        return Path(self.schedule_formation_map_path).resolve()
+
+    @property
+    def exams_data_path_abs(self) -> Path:
+        return Path(self.exams_data_path).resolve()
+
+    @property
+    def exams_study_formation_list(self) -> List[str]:
+        """Lista grupelor pentru examene (parsate din CSV)."""
+        return [x.strip() for x in self.exams_study_formations.split(",") if x.strip()]
+
+    @property
+    def schedule_formation_id_list(self) -> List[str]:
+        """Lista ID-urilor de formații (parsate din CSV) — ușor de extins în .env."""
+        return [x.strip() for x in self.schedule_formation_ids.split(",") if x.strip()]
+
+    @property
     def database_path_abs(self) -> Path:
         return Path(self.database_path).resolve()
 
@@ -172,3 +219,4 @@ settings.log_dir_abs.mkdir(parents=True, exist_ok=True)
 settings.docs_folder_abs.mkdir(parents=True, exist_ok=True)
 settings.database_path_abs.parent.mkdir(parents=True, exist_ok=True)
 settings.originals_folder_abs.mkdir(parents=True, exist_ok=True)
+settings.schedule_data_path_abs.parent.mkdir(parents=True, exist_ok=True)

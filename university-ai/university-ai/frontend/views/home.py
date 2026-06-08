@@ -18,6 +18,21 @@ from frontend.components import session
 from frontend.components.navbar import brand_html, render_navbar
 
 
+# ── Iconițe SVG simple (line-style, fără emoji) pentru cardurile de funcții ────
+# Fiecare SVG e pe o singură linie (altfel Markdown îl tratează drept cod).
+_SVG = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
+    'stroke-linecap="round" stroke-linejoin="round" width="28" height="28">'
+)
+
+ICON_CHAT = _SVG + '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+ICON_DOC = _SVG + '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>'
+ICON_CALENDAR = _SVG + '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>'
+ICON_UPLOAD = _SVG + '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+ICON_HISTORY = _SVG + '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>'
+ICON_GLOBE = _SVG + '<circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg>'
+
+
 def render() -> None:
     """Randează pagina home."""
     user = session.get_current_user()
@@ -45,27 +60,30 @@ def render() -> None:
     with col2:
         if user:
             if st.button(
-                f"💬 Continuă conversația ca {user['username']}",
+                f"Continuă conversația ca {user['username']}",
                 type="primary",
                 use_container_width=True,
                 key="cta_continue",
+                icon=":material/chat:",
             ):
                 session.navigate_to(session.PAGE_CHAT)
         else:
             cta_a, cta_b = st.columns(2)
             with cta_a:
                 if st.button(
-                    "🚀 Începe gratuit",
+                    "Începe gratuit",
                     type="primary",
                     use_container_width=True,
                     key="cta_start_chat",
+                    icon=":material/rocket_launch:",
                 ):
                     session.navigate_to(session.PAGE_CHAT)
             with cta_b:
                 if st.button(
-                    "✨ Creează cont",
+                    "Creează cont",
                     use_container_width=True,
                     key="cta_register",
+                    icon=":material/person_add:",
                 ):
                     session.navigate_to(session.PAGE_REGISTER)
 
@@ -76,27 +94,28 @@ def render() -> None:
 
     st.markdown("<div style='height: 70px;'></div>", unsafe_allow_html=True)
 
-    # ─── BENEFICII (prietenoase, fără jargon tehnic) ──────────────────────────
-    st.markdown("### De ce ClaudiuAI?")
+    # ─── FUNCȚIONALITĂȚI (carduri orientate pe ce poate face produsul) ────────
+    st.markdown("### Ce poți face cu ClaudiuAI?")
 
     benefits = [
-        ("💬", "Conversație naturală",
-         "Întreabă exact cum ai vorbi cu un coleg. Înțelege întrebări simple "
-         "sau complexe și îți răspunde la obiect."),
-        ("🇷🇴", "Mereu în limba română",
-         "Indiferent cum formulezi întrebarea, primești răspuns clar și corect "
-         "în limba română."),
-        ("⚡", "Răspunsuri rapide",
-         "Fără să cauți prin zeci de pagini — pui întrebarea și ai răspunsul "
-         "în câteva secunde."),
-        ("📚", "Istoric salvat",
+        (ICON_CHAT, "Întrebări pe documente",
+         "Pune întrebări în limba română despre regulamente și proceduri și "
+         "primești răspunsuri clare, cu citarea sursei."),
+        (ICON_DOC, "Completare cereri",
+         "Spune-mi datele tale și îți completez automat cererea-model, gata "
+         "de descărcat ca document .docx."),
+        (ICON_CALENDAR, "Deadline-uri + Calendar",
+         "Detectez termenele-limită din răspunsuri și îți ofer un buton pentru "
+         "a le adăuga direct în Google Calendar."),
+        (ICON_UPLOAD, "Upload documente",
+         "Atașează un PDF, DOCX sau o imagine și pune întrebări direct pe baza "
+         "conținutului lui (cu OCR automat)."),
+        (ICON_HISTORY, "Istoric salvat",
          "Cu un cont, toate conversațiile tale sunt salvate și le poți relua "
          "oricând, de unde ai rămas."),
-        ("🔒", "Datele tale, private",
-         "Conversațiile tale rămân ale tale. Totul rulează în siguranță, "
-         "fără să-ți expună informațiile."),
-        ("🕐", "Disponibil non-stop",
-         "Zi sau noapte, ClaudiuAI e gata să te ajute ori de câte ori ai nevoie."),
+        (ICON_GLOBE, "Mereu în limba română",
+         "Indiferent cum formulezi întrebarea, primești răspuns clar și corect "
+         "în limba română."),
     ]
 
     for row in range(0, len(benefits), 3):
@@ -129,8 +148,9 @@ def render() -> None:
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("💬 Deschide chat-ul", type="primary",
-                         use_container_width=True, key="cta_bottom"):
+            if st.button("Deschide chat-ul", type="primary",
+                         use_container_width=True, key="cta_bottom",
+                         icon=":material/chat:"):
                 session.navigate_to(session.PAGE_CHAT)
 
     # ─── FOOTER ───────────────────────────────────────────────────────────────

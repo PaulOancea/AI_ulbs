@@ -72,3 +72,23 @@ def strip_diacritics(text: str) -> str:
 def normalize(text: str) -> str:
     """Normalizare pentru comparații/căutare: lowercase + fără diacritice."""
     return strip_diacritics((text or "").lower()).strip()
+
+
+def _md_cell(value) -> str:
+    """Curăță o valoare pentru o celulă de tabel Markdown (escape `|`, fără newline)."""
+    s = ("" if value is None else str(value)).replace("|", "\\|").replace("\n", " ").strip()
+    return s or "—"
+
+
+def markdown_table(headers: list, rows: list) -> str:
+    """
+    Construiește un tabel GitHub-Flavored-Markdown dintr-un antet și rânduri.
+    Streamlit (`st.markdown`) îl randează ca tabel real. Celulele goale devin „—",
+    iar caracterele `|` sunt escapate ca să nu strice structura tabelului.
+
+    Ex: markdown_table(["A", "B"], [["1", "2"], ["3", "4"]]).
+    """
+    head = "| " + " | ".join(_md_cell(h) for h in headers) + " |"
+    sep = "| " + " | ".join("---" for _ in headers) + " |"
+    body = ["| " + " | ".join(_md_cell(c) for c in r) + " |" for r in rows]
+    return "\n".join([head, sep] + body)
